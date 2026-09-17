@@ -1,0 +1,17 @@
+node_modules/
+.env
+.env.*
+!.env.example
+*.env
+client.json
+*owner*.json
+!deploy/owner-config.example.json
+state.sqlite*
+*.db*
+*.log
+*.tgz
+coverage/
+.local/
+scopes/
+attachments/
+worktrees/
