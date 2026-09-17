@@ -8,6 +8,9 @@ const [action, ...args] = process.argv.slice(2);
 if (action === "--help" || action === "help" || !action) {
   console.log(`CodePat (Node 24)
 status | repositories | instances | workers | projects | project <uuid>
+contacts <name-or-email>
+dm-send <stable-key> (--to <name-or-email> | --recipient <verified-user-id>) [--room <uuid>] --file <message>
+dm-status <stable-key> | dm-retry <stable-key>
 start <stable-key> --file <prompt> --project <uuid> [--repo <path>] [--base <branch>] [--kind codex|claude]
 send|resume <worker> --file <instructions> | stop|read <worker>
 worker-result <worker> --file <result> | task-report <status> --file <comment>
@@ -36,6 +39,22 @@ const jobId = process.env.CODEPAT_JOB_ID;
 let body: Record<string, unknown> = { jobId };
 let route = action;
 switch (action) {
+  case "contacts":
+    body = { jobId, query: args[0] };
+    break;
+  case "dm-status":
+  case "dm-retry":
+    body = { jobId, key: args[0] };
+    break;
+  case "dm-send":
+    if (args.includes("--to") === args.includes("--recipient"))
+      throw new Error("Select exactly one --to or --recipient");
+    body = {
+      jobId, key: args[0], text: readFileSync(option("--file"), "utf8"),
+      ...(args.includes("--to") ? { query: option("--to") } : { recipientId: option("--recipient") }),
+      ...(args.includes("--room") ? { roomId: option("--room") } : {}),
+    };
+    break;
   case "status":
     break;
   case "project":

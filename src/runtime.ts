@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { Contacts } from "./contacts.ts";
 import { type Agent, type HerdrPort, paneFrom } from "./herdr.ts";
 import type { ChatService } from "./http.ts";
 import { inspectProject, pages, projectId } from "./projects.ts";
@@ -32,6 +33,7 @@ export interface RuntimeConfig {
   coworkerId?: string;
   workerIdleMs?: number;
   repositories?: Record<string, string>;
+  contactAccountsFile?: string;
 }
 interface Scope {
   kind: "job" | "worker";
@@ -54,10 +56,12 @@ export class Runtime implements ChatService {
   pollError?: string;
   runnerAt = 0;
   workerOperations = new Set<string>();
+  contacts: Contacts;
   constructor(state: State, herdr: HerdrPort, config: RuntimeConfig) {
     this.state = state;
     this.herdr = herdr;
     this.config = config;
+    this.contacts = new Contacts(state, config);
     // An interrupted send may already have reached the recipient. Never replay blindly.
     for (const item of state.all<Delivery>("deliveries")) {
       if (item.status === "sending")
@@ -114,6 +118,10 @@ export class Runtime implements ChatService {
         "workers",
         "instances",
         "repositories",
+        "contacts",
+        "dm-send",
+        "dm-status",
+        "dm-retry",
         "projects",
         "project",
         "start",
@@ -850,6 +858,10 @@ export class Runtime implements ChatService {
       threadId: this.state.get<string>("threads", job.conversationId),
       context: {
         workerKinds: ["codex", "claude"],
+        directMessages: this.contacts.recent({
+          userId: this.conversationOwner(job.conversationId) ?? "",
+          organizationId: this.state.get<Conversation>("conversations", job.conversationId)?.metadata.sokosumi_organization_id ?? "",
+        }),
         workers: this.workers(job),
         deliveryProblems: this.state
           .all<Delivery>("deliveries")
@@ -1343,6 +1355,23 @@ export class Runtime implements ChatService {
         textField(body, "threadId"),
       );
       return { ok: true };
+    }
+    if (["contacts", "dm-send", "dm-status", "dm-retry"].includes(action)) {
+      const allowed = action === "contacts" ? ["jobId", "query"]
+        : action === "dm-send" ? ["jobId", "key", "query", "recipientId", "roomId", "text"] : ["jobId", "key"];
+      if (Object.keys(body).some(key => !allowed.includes(key)))
+        throw new Error("Unsupported contact arguments; identity and credentials come from the active request");
+      const conversation = this.projectConversation(job);
+      const scope = { userId: conversation.owner, organizationId: textField(conversation.metadata, "sokosumi_organization_id") };
+      if (action === "contacts") return this.contacts.lookup(scope, textField(body, "query"));
+      const key = textField(body, "key");
+      if (action === "dm-status") return this.contacts.get(scope, key);
+      if (action === "dm-retry") return this.contacts.retry(scope, key);
+      const queued = this.contacts.queue(scope, key, body);
+      // Return a final local state when possible; intent is durable first. The
+      // independent delivery loop also recovers queued work after disconnects.
+      await this.contacts.deliverQueued(queued.id);
+      return this.contacts.get(scope, key);
     }
     if (action === "projects")
       return pages(this.api.bind(this), "/projects", this.contextHeaders(this.projectConversation(job)));

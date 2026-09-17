@@ -1,0 +1,7 @@
+[
+  {
+    "userId": "replace-with-requesting-user-id",
+    "organizationId": "replace-with-organization-id",
+    "configPath": "/absolute/private/requester-owner-config.json"
+  }
+]

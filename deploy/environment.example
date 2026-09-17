@@ -10,3 +10,6 @@ CODEPAT_PORT=3210
 # CODEPAT_REPOSITORIES_JSON={"example":"/absolute/path/to/example"}
 # CODEPAT_WORKER_IDLE_MS=900000
 # HERDR_SOCKET_PATH=/absolute/path/to/herdr.sock
+
+# Optional native-contact directory access registry (private, service-owned, mode 600).
+# CODEPAT_CONTACT_ACCOUNTS_FILE=/absolute/private/contact-accounts.json

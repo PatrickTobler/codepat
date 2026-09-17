@@ -45,6 +45,7 @@ const runtime = new Runtime(state, herdr, {
   apiUrl: process.env.CODEPAT_API_URL ?? "https://api.sokosumi.com/v1",
   apiKey: process.env.CODEPAT_API_KEY,
   coworkerId: process.env.CODEPAT_COWORKER_ID,
+  contactAccountsFile: process.env.CODEPAT_CONTACT_ACCOUNTS_FILE,
   workerIdleMs,
   repositories: repositories as Record<string, string>,
 });
@@ -239,6 +240,7 @@ loop(3000, async () => {
   await runtime.cleanupWorkers();
 });
 loop(2000, () => runtime.deliver());
+loop(2000, () => runtime.contacts.deliver());
 loop(5000, () => runtime.pollTasks());
 loop(5000, () => runtime.flushOutbox());
 loop(10_000, ensureRunner);
