@@ -1,3 +1,4 @@
+import { ProgressJournal } from "./progress.ts";
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -193,6 +194,10 @@ async function ensureRunner(): Promise<void> {
             : existsSync(outputPath)
               ? readFileSync(outputPath, "utf8")
               : "";
+        try {
+          const progress = new ProgressJournal(join(orchestratorDir, `${job.id}.progress.json`));
+          runtime.recordProgress(job.id, progress.items);
+        } catch { console.error("Progress recovery failed; retaining journal for inspection."); }
         runtime.completeJob(
           job.id,
           text ||

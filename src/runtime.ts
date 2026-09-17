@@ -1,3 +1,4 @@
+import { MAX_PROGRESS, validateProgress, type Progress } from "./progress.ts";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   existsSync,
@@ -114,6 +115,7 @@ export class Runtime implements ChatService {
         "workers",
         "instances",
         "repositories",
+        "progress",
         "projects",
         "project",
         "start",
@@ -155,8 +157,36 @@ export class Runtime implements ChatService {
       throw new Error("Idempotency key already used with different input");
     return job;
   }
+  findResponse(owner: string, conversationId: string, key: string): Job | undefined {
+    if (this.conversationOwner(conversationId) !== owner) return undefined;
+    const id = this.state.get<string>("dedupe", `chat:${owner}:${conversationId}:${key}`);
+    return id ? this.getResponse(id) : undefined;
+  }
   getResponse(id: string): Job | undefined {
     return this.state.get<Job>("jobs", id);
+  }
+  getProgress(id: string): Progress[] {
+    this.job(id);
+    return this.state.get<Progress[]>("progress", id) ?? [];
+  }
+  recordProgress(id: string, values: unknown): void {
+    if (!Array.isArray(values) || values.length > MAX_PROGRESS) throw new Error("Invalid progress batch");
+    const items = values.map(validateProgress);
+    this.state.transaction(() => {
+      const job = this.job(id);
+      const stored = this.getProgress(id);
+      for (const item of items) {
+        const prior = stored.find(old => old.key === item.key);
+        if (prior) {
+          if (JSON.stringify(prior) !== JSON.stringify(item)) throw new Error("Progress key conflict");
+          continue;
+        }
+        if (job.status !== "in_progress") throw new Error("Job is not active");
+        if (stored.length >= MAX_PROGRESS) break;
+        stored.push(item);
+      }
+      this.state.put("progress", id, stored);
+    });
   }
   async waitResponse(id: string, signal: AbortSignal): Promise<void> {
     while (!signal.aborted) {
@@ -1336,6 +1366,11 @@ export class Runtime implements ChatService {
       return { ok: true };
     }
     if (job.status !== "in_progress") throw new Error("Job is not active");
+    if (action === "progress") {
+      if (Object.keys(body).some(key => !["jobId", "items"].includes(key))) throw new Error("Unsupported progress arguments");
+      this.recordProgress(job.id, body.items);
+      return { ok: true };
+    }
     if (action === "thread") {
       this.state.put(
         "threads",

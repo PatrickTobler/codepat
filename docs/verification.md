@@ -3,7 +3,7 @@
 This standalone extraction was checked on 2026-09-17 with Node 24.21.0 and npm 11.19.0 on Linux. Checks run from this repository, without importing runtime code or dependencies from the source monorepo:
 
 - `npm ci --ignore-scripts`: clean locked dependency installation; zero reported vulnerabilities.
-- `npm test`: 69 passed, 0 failed, 0 skipped. Tests use temporary SQLite databases, local HTTP fixtures, synthetic identities and temporary Git repositories.
+- `npm test`: 77 passed, 0 failed, 0 skipped. Tests use temporary SQLite databases, local HTTP fixtures, synthetic identities and temporary Git repositories.
 - `npm run typecheck`: passed.
 - `node src/cli.ts --help`: passed without service/config/credentials.
 - `git diff --check` and staged content/path review: no whitespace errors or private runtime artifacts. Only source, tests, documentation, license, package metadata and example configs are included.
@@ -15,3 +15,5 @@ Read-only live verification retrieved the docs root and v1 OpenAPI. Project list
 Not tested end-to-end in this delivery: fresh Herdr installation, new agent account authentication, vendor/coworker registration, workspace grants, owner-authenticated production PATCH, DNS/TLS/authenticated ingress, systemd installation/restart, live task creation/worker launch or cleanup against Herdr. Installed tool versions were observed, but new workers/tasks were not launched. No live service configuration, source checkout, production database or unrelated session was modified. No rollout, restart, merge or deployment was performed.
 
 The GitHub workflow repeats the source checks on Node 24.21.0; consult the actual PR checks for hosted-run status. Local checks do not prove infrastructure provisioning or upstream account permissions. Follow the disposable-host acceptance steps in setup before rollout.
+
+The live-progress extension adds eight tests for safe exec projection, durable bounded journals, scoped ingestion, pre-completion SSE timing, replay/idempotency, terminal failure and unchanged nonstreaming results. A separate read-only probe against the actual Sokosumi parser confirmed one progress block before final text. See [streaming](streaming.md) for consumer reconnect/failure limitations and the unperformed rollout/browser checks.

@@ -1,3 +1,5 @@
+import { setTimeout as delay } from "node:timers/promises";
+import type { Progress } from "./progress.ts";
 import { createHash, timingSafeEqual } from "node:crypto";
 import {
   createServer,
@@ -34,6 +36,8 @@ export interface ChatService {
   ): { id: string };
   getResponse(id: string): ChatResponse | undefined;
   waitResponse(id: string, signal: AbortSignal): Promise<void>;
+  getProgress?(id: string): Progress[];
+  findResponse?(owner: string, conversationId: string, key: string): ChatResponse | undefined;
 }
 
 export interface CodePatServerOptions {
@@ -157,15 +161,16 @@ async function inputText(
   return messages.join("\n\n");
 }
 
-function responseObject(response: ChatResponse) {
+function responseObject(response: ChatResponse, progress: Progress[] = []) {
   return {
     id: response.id,
     object: "response",
     status: response.status,
     conversation: { id: response.conversationId },
     model: "codepat",
-    output: response.text
-      ? [
+    output: [
+      ...progress.map((item, i) => ({ id: `progress_${response.id}_${i}`, type: "reasoning", summary: [{ type: "summary_text", text: item.text + "\n\n" }] })),
+      ...(response.text ? [
           {
             id: `msg_${response.id}`,
             type: "message",
@@ -177,12 +182,78 @@ function responseObject(response: ChatResponse) {
             ],
           },
         ]
-      : [],
+      : []),
+    ],
     output_text: response.text,
     error: response.error
       ? { code: "server_error", message: response.error }
       : null,
   };
+}
+
+// A slow/disconnected reader loses only its connection, never its durable job.
+async function writeStream(res: ServerResponse, data: string): Promise<void> {
+  if (res.destroyed) throw new Error("Disconnected");
+  if (res.write(data)) return;
+  await new Promise<void>((resolve, reject) => {
+    const done = (error?: Error) => {
+      clearTimeout(timer);
+      res.off("drain", drained); res.off("close", closed); res.off("error", done);
+      error ? reject(error) : resolve();
+    };
+    const drained = () => done();
+    const closed = () => done(new Error("Disconnected"));
+    const timer = setTimeout(() => { res.destroy(); done(new Error("Slow stream reader")); }, 5000);
+    res.once("drain", drained); res.once("close", closed); res.once("error", done);
+  });
+}
+
+async function streamResponse(req: IncomingMessage, res: ServerResponse, service: ChatService, id: string, signal: AbortSignal) {
+  const cursor = req.headers["last-event-id"];
+  let after = -1;
+  if (cursor !== undefined) {
+    if (typeof cursor !== "string" || !cursor.startsWith(`${id}:`) || !/^\d+$/.test(cursor.slice(id.length + 1)))
+      throw new HttpError(400, "Last-Event-ID must belong to this response");
+    after = Number(cursor.slice(id.length + 1));
+    const job = service.getResponse(id)!;
+    const maximum = (service.getProgress?.(id).length ?? 0) * 2 +
+      (["completed", "failed"].includes(job.status) ? 2 : 0);
+    if (!Number.isSafeInteger(after) || after > maximum) throw new HttpError(400, "Invalid event cursor");
+  }
+  res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive", "X-Accel-Buffering": "no" });
+  const emit = async (sequence: number, type: string, value: Record<string, unknown>) => {
+    if (sequence <= after) return;
+    await writeStream(res, `id: ${id}:${sequence}\nevent: ${type}\ndata: ${JSON.stringify({ type, sequence_number: sequence, ...value })}\n\n`);
+    after = sequence;
+  };
+  const initial = service.getResponse(id)!;
+  await emit(0, "response.created", { response: responseObject({ ...initial, status: "queued", text: "", error: undefined }) });
+  let lastKeepalive = Date.now();
+  // Legacy test/services without progress still retain waitResponse semantics.
+  if (!service.getProgress) await service.waitResponse(id, signal);
+  while (!signal.aborted) {
+    const job = service.getResponse(id)!;
+    const progress = service.getProgress?.(id) ?? [];
+    for (let i = 0; i < progress.length; i++) {
+      const item = progress[i];
+      const itemId = `progress_${id}_${i}`;
+      const text = item.text + "\n\n";
+      await emit(i * 2 + 1, "response.reasoning_summary_text.delta", { item_id: itemId, output_index: i, summary_index: 0, delta: text, progress_kind: item.kind });
+      await emit(i * 2 + 2, "response.output_item.done", { output_index: i, item: { id: itemId, type: "reasoning", summary: [{ type: "summary_text", text }] } });
+    }
+    if (["completed", "failed"].includes(job.status)) {
+      if (job.text) await emit(progress.length * 2 + 1, "response.output_text.delta", { item_id: `msg_${id}`, output_index: progress.length, content_index: 0, delta: job.text });
+      await emit(progress.length * 2 + 2, job.status === "failed" ? "response.failed" : "response.completed", { response: responseObject(job, progress) });
+      await writeStream(res, "data: [DONE]\n\n");
+      res.end();
+      return;
+    }
+    if (Date.now() - lastKeepalive > 15000) {
+      await writeStream(res, ": keepalive\n\n");
+      lastKeepalive = Date.now();
+    }
+    await delay(50, undefined, { signal });
+  }
 }
 
 export function createCodePatServer(options: CodePatServerOptions) {
@@ -205,12 +276,10 @@ export function createCodePatServer(options: CodePatServerOptions) {
     const abort = new AbortController();
     const disconnect = () => abort.abort();
     res.once("close", disconnect);
-    let keepalive: ReturnType<typeof setInterval> | undefined;
-    let sequence = 0;
     const event = (type: string, value: Record<string, unknown>) => {
       if (!res.destroyed)
         res.write(
-          `event: ${type}\ndata: ${JSON.stringify({ type, sequence_number: sequence++, ...value })}\n\n`,
+          `event: ${type}\ndata: ${JSON.stringify({ type, ...value })}\n\n`,
         );
     };
     try {
@@ -288,7 +357,10 @@ export function createCodePatServer(options: CodePatServerOptions) {
       }
       const responseMatch = /^\/v1\/responses\/([^/]+)$/.exec(path);
       if (req.method === "GET" && responseMatch) {
-        json(res, 200, responseObject(getResponse(responseMatch[1], ownerId)));
+        const response = getResponse(responseMatch[1], ownerId);
+        if (new URL(req.url!, "http://localhost").searchParams.get("stream") === "true")
+          await streamResponse(req, res, service, response.id, abort.signal);
+        else json(res, 200, responseObject(response));
         return;
       }
       if (req.method !== "POST" || path !== "/v1/responses")
@@ -314,6 +386,13 @@ export function createCodePatServer(options: CodePatServerOptions) {
         (typeof key !== "string" || !key.trim() || key.length > 256)
       )
         throw new HttpError(400, "Invalid idempotency key");
+      if (req.headers["last-event-id"] !== undefined) {
+        if (!key) throw new HttpError(400, "POST replay requires the original idempotency key; use GET response?stream=true instead");
+        const existing = service.findResponse?.(ownerId, conversationId, key);
+        if (!existing || typeof req.headers["last-event-id"] !== "string" ||
+            !req.headers["last-event-id"].startsWith(`${existing.id}:`))
+          throw new HttpError(400, "POST replay must identify the existing response and original key");
+      }
       const attachmentDirectory = options.attachmentDirectory
         ? join(
             options.attachmentDirectory,
@@ -331,41 +410,12 @@ export function createCodePatServer(options: CodePatServerOptions) {
         input,
         key,
       );
-      // A client disconnect cancels only its waiter, never the persisted job.
-      if (body.stream) {
-        res.writeHead(200, {
-          "Content-Type": "text/event-stream",
-          "Cache-Control": "no-cache",
-          Connection: "keep-alive",
-          "X-Accel-Buffering": "no",
-        });
-        event("response.created", {
-          response: responseObject(getResponse(id, ownerId)),
-        });
-        keepalive = setInterval(() => {
-          if (!res.destroyed) res.write(": keepalive\n\n");
-        }, 15_000);
-        keepalive.unref();
+      // A client disconnect cancels only its reader, never the persisted job.
+      if (body.stream) await streamResponse(req, res, service, id, abort.signal);
+      else {
+        await service.waitResponse(id, abort.signal);
+        if (!abort.signal.aborted) json(res, 200, responseObject(getResponse(id, ownerId)));
       }
-      await service.waitResponse(id, abort.signal);
-      if (abort.signal.aborted) return;
-      const response = getResponse(id, ownerId);
-      if (body.stream) {
-        if (response.text)
-          event("response.output_text.delta", {
-            item_id: `msg_${id}`,
-            output_index: 0,
-            content_index: 0,
-            delta: response.text,
-          });
-        event(
-          response.status === "failed"
-            ? "response.failed"
-            : "response.completed",
-          { response: responseObject(response) },
-        );
-        res.end("data: [DONE]\n\n");
-      } else json(res, 200, responseObject(response));
     } catch (error) {
       if (abort.signal.aborted || res.destroyed) return;
       const status =
@@ -384,7 +434,6 @@ export function createCodePatServer(options: CodePatServerOptions) {
         json(res, status, { error: { message } });
       }
     } finally {
-      if (keepalive) clearInterval(keepalive);
       res.off("close", disconnect);
     }
   });

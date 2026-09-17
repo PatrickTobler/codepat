@@ -1,3 +1,4 @@
+import { CodexProgress, ProgressJournal } from "./progress.ts";
 import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFile, rename, unlink, writeFile } from "node:fs/promises";
@@ -109,6 +110,30 @@ while (!stopping) {
     ];
     await report("working");
     console.log(`\nCodePat handling ${id} (${job.kind})`);
+    const journal = new ProgressJournal(join(process.cwd(), `${id}.progress.json`));
+    // Enable summaries only for the inspected JSONL contract. Other versions
+    // still expose assistant commentary and fixed activity labels, never reasoning.
+    const codexVersion = await exec("codex", ["--version"], { timeout: 5000 }).catch(() => ({ stdout: "" }));
+    const projection = new CodexProgress(item => journal.append(item), codexVersion.stdout.trim() === "codex-cli 0.154.0");
+    const jobClient = record(JSON.parse(await readFile(textField(next, "jobConfig"), "utf8")));
+    let progressBusy: Promise<void> | undefined;
+    let acknowledged = 0;
+    const flushProgress = () => {
+      if (progressBusy) return progressBusy;
+      progressBusy = (async () => {
+        if (acknowledged === journal.items.length) return;
+        const items = journal.items.slice();
+        const response = await fetch(`${textField(jobClient, "url")}/control/progress`, {
+          method: "POST", headers: { Authorization: `Bearer ${textField(jobClient, "token")}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ jobId: id, items }), signal: AbortSignal.timeout(3000),
+        });
+        const receipt = record(await response.json());
+        if (!response.ok || receipt.ok !== true) throw new Error("Progress not acknowledged");
+        acknowledged = items.length;
+      })().finally(() => { progressBusy = undefined; });
+      return progressBusy;
+    };
+    const progressTimer = setInterval(() => { void flushProgress().catch(() => undefined); }, 200);
     let newThread: string | undefined;
     let timedOut = false;
     let exitCode: number;
@@ -157,6 +182,7 @@ while (!stopping) {
               typeof event.thread_id === "string"
             )
               newThread = event.thread_id;
+            projection.ingest(event);
             // Print normal progress to this pane, never scrape it as the result channel.
             if (event.type === "item.completed") {
               const item = record(event.item);
@@ -186,6 +212,9 @@ while (!stopping) {
         child.stdin!.end(prompt);
       });
     } finally {
+      clearInterval(progressTimer);
+      projection.finish();
+      await flushProgress().catch(() => undefined);
       await settleTurn(id);
     }
     let text = "";
@@ -220,6 +249,7 @@ while (!stopping) {
           await control("thread", { jobId: id, threadId: newThread });
           threadSaved = true;
         }
+        await flushProgress();
         await control("reply", completion);
         delivered = true;
       } catch {
@@ -231,6 +261,7 @@ while (!stopping) {
     activeJob = undefined;
     await unlink(output).catch(() => undefined);
     await unlink(completionPath).catch(() => undefined);
+    await unlink(journal.path).catch(() => undefined);
   } catch (error) {
     console.error(String(error));
     if (activeJob) {
