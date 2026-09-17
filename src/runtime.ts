@@ -1,3 +1,4 @@
+import { failureText } from "./recovery.ts";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   existsSync,
@@ -110,10 +111,12 @@ export class Runtime implements ChatService {
     return (
       body.jobId === scope.id &&
       this.getResponse(scope.id)?.status === "in_progress" &&
+      (scope.generation ?? 0) === (this.getResponse(scope.id)?.generation ?? 0) &&
       [
         "workers",
         "instances",
         "repositories",
+        "recover-chat",
         "projects",
         "project",
         "start",
@@ -598,6 +601,8 @@ export class Runtime implements ChatService {
               : (live?.agent_status ?? "missing");
         const previous = worker.state;
         worker.state = state;
+        if (state === "blocked" || (previous === "blocked" && state !== "working")) worker.recoveryHold = true;
+        else if (state === "working") worker.recoveryHold = false;
         if (replaced)
           worker.error =
             "Worker pane belongs to another agent; retained for inspection";
@@ -646,6 +651,13 @@ export class Runtime implements ChatService {
       this.workerOperations.add(snapshot.id);
       const worker = this.state.get<Worker>("workers", snapshot.id)!;
       try {
+        const uncertain = this.state.all<Delivery>("deliveries").some(item => item.workerId === worker.id && ["sending", "uncertain"].includes(item.status));
+        if (uncertain || worker.recoveryHold) {
+          worker.state = "recovery_blocked";
+          this.state.put("workers", worker.id, worker);
+          this.workerNotice(worker, "Recovery retained an uncertain instruction or human approval boundary. Reconcile it before explicitly resuming; no instruction was replayed.");
+          continue;
+        }
         if ((worker.recoveryAttempts ?? 0) >= 2 || !worker.taskId) {
           worker.state = "recovery_blocked";
           this.state.put("workers", worker.id, worker);
@@ -730,7 +742,7 @@ export class Runtime implements ChatService {
           this.state.put("workers", worker.id, worker);
           this.queueInstruction(
             worker,
-            `Recover the interrupted task in the same worktree and saved session. Inspect current files and prior actions before continuing; never repeat an external side effect without checking whether it already happened. Original task: ${worker.prompt}\n${worker.setupInstructions ?? ""}\nRecent instructions (historical context; reconcile completed parts):\n${previous.map((item) => item.text).join("\n\n")}\nFinish by reporting a structured result with the reporting command appended below.`,
+            `Recover the interrupted task in the same worktree and saved session. Inspect current files and prior actions before continuing; never repeat an external side effect without checking whether it already happened. Inspect existing PRs for the retained branch and reuse them; a missing local receipt is not proof that a send, task, worker or PR was never created. Preserve pending human approvals. Original task: ${worker.prompt}\n${worker.setupInstructions ?? ""}\nRecent instructions (historical context; reconcile completed parts):\n${previous.map((item) => item.text).join("\n\n")}\nFinish by reporting a structured result with the reporting command appended below.`,
           );
         });
         if (task.status === "READY")
@@ -813,7 +825,7 @@ export class Runtime implements ChatService {
       this.state.put("deliveries", item.id, item);
     }
   }
-  nextJob(runnerId?: string): {
+  nextJob(runnerId?: string, protocol?: number): {
     job: Job;
     jobConfig: string;
     threadId?: string;
@@ -836,10 +848,11 @@ export class Runtime implements ChatService {
     if (!job) return null;
     // Prepare credentials before marking a claim; an I/O failure leaves the job queued.
     let jobConfig = this.state.get<string>("jobConfigs", job.id);
-    if (!jobConfig) jobConfig = this.scopedConfig({ kind: "job", id: job.id });
+    if (!jobConfig) jobConfig = this.scopedConfig({ kind: "job", id: job.id, generation: job.generation ?? 0 });
     this.state.transaction(() => {
       job.status = "in_progress";
       job.submittedAt ??= Date.now();
+      if (!active) { job.reservationProtocol = protocol; job.turnStarted = false; }
       this.state.put("jobs", job.id, job);
       this.state.put("jobConfigs", job.id, jobConfig);
       this.state.put("claims", job.id, runnerId ?? "test");
@@ -850,6 +863,7 @@ export class Runtime implements ChatService {
       threadId: this.state.get<string>("threads", job.conversationId),
       context: {
         workerKinds: ["codex", "claude"],
+        recoveryNote: job.recoveryNote,
         workers: this.workers(job),
         deliveryProblems: this.state
           .all<Delivery>("deliveries")
@@ -882,6 +896,29 @@ export class Runtime implements ChatService {
           })),
       },
     };
+  }
+  requeueChat(id: string, note: string): void {
+    const job = this.job(id);
+    if (job.kind !== "chat" || (job.recoveryAttempts ?? 0) >= 2) throw new Error("Chat recovery limit reached");
+    job.status = "queued";
+    job.text = "";
+    job.error = undefined;
+    job.generation = (job.generation ?? 0) + 1;
+    job.recoveryAttempts = (job.recoveryAttempts ?? 0) + 1;
+    job.recoveryNote = note;
+    job.turnStarted = false;
+    this.state.put("jobs", id, job);
+    this.state.put("jobConfigs", id, null);
+    this.state.put("claims", id, null);
+  }
+  recoverInterruptedJob(id: string, executionMayHaveStarted = false): void {
+    const job = this.job(id);
+    if (job.status !== "in_progress") return;
+    // Called only after the supervisor proves the old runner is gone and the
+    // old unit is inactive/failed/not-found. A stale heartbeat alone is insufficient.
+    if (job.kind === "chat" && job.reservationProtocol === 1 && !job.turnStarted && !executionMayHaveStarted && (job.recoveryAttempts ?? 0) < 2) {
+      this.state.transaction(() => this.requeueChat(id, "Recovered an unstarted reservation; no model process was authorized to launch."));
+    } else this.completeJob(id, failureText("recovery_required"), "recovery_required");
   }
   completeJob(id: string, text: string, error?: string): void {
     const job = this.job(id);
@@ -1274,7 +1311,7 @@ export class Runtime implements ChatService {
     action: string,
     body: Record<string, unknown>,
   ): Promise<unknown> {
-    if (action === "next") return this.nextJob(textField(body, "runnerId"));
+    if (action === "next") return this.nextJob(textField(body, "runnerId"), body.protocol === 1 ? 1 : undefined);
     if (action === "heartbeat") {
       this.runnerAt = Date.now();
       return { ok: true };
@@ -1327,7 +1364,15 @@ export class Runtime implements ChatService {
       return { ok: true };
     }
     const job = this.job(textField(body, "jobId"));
+    if (action === "begin-turn") {
+      if (job.status !== "in_progress" || this.state.get("claims", job.id) !== body.runnerId || job.turnStarted)
+        throw new Error("Turn already started or claim invalid; reconcile instead of executing again");
+      job.turnStarted = true;
+      this.state.put("jobs", job.id, job);
+      return { ok: true };
+    }
     if (action === "reply") {
+      if ((body.attempt ?? 0) !== (job.generation ?? 0)) throw new Error("Stale completion attempt");
       this.completeJob(
         job.id,
         typeof body.text === "string" ? body.text : "",
@@ -1336,6 +1381,18 @@ export class Runtime implements ChatService {
       return { ok: true };
     }
     if (job.status !== "in_progress") throw new Error("Job is not active");
+    if (action === "recover-chat") {
+      const target = this.job(textField(body, "responseId"));
+      const note = textField(body, "reconciliation");
+      if (body.reconciled !== true || note.length > 10000 || target.conversationId !== job.conversationId ||
+          target.kind !== "chat" || target.status !== "failed") throw new Error("Explicit reconciled recovery of an owned failed chat is required");
+      const workerIds = new Set(this.workers(target).map(w => w.id));
+      if (this.state.all<Delivery>("deliveries").some(d => workerIds.has(d.workerId) && ["sending", "uncertain"].includes(d.status)) ||
+          this.state.all<Outbox>("outbox").some(o => o.conversationId === target.conversationId && ["sending", "uncertain"].includes(o.status)))
+        throw new Error("Uncertain external effects must be reconciled before recovery");
+      this.state.transaction(() => this.requeueChat(target.id, note));
+      return { id: target.id, status: "queued" };
+    }
     if (action === "thread") {
       this.state.put(
         "threads",

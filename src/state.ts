@@ -15,6 +15,11 @@ export interface Job {
   workerId?: string;
   createdAt: number;
   submittedAt?: number;
+  generation?: number;
+  recoveryAttempts?: number;
+  recoveryNote?: string;
+  reservationProtocol?: number;
+  turnStarted?: boolean;
 }
 export interface Conversation {
   id: string;
@@ -33,6 +38,7 @@ export interface Worker {
   baseCommit?: string;
   setupInstructions?: string;
   recoveryAttempts?: number;
+  recoveryHold?: boolean;
   nextRecoveryAt?: number;
   taskId?: string;
   taskUrl?: string;
