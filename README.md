@@ -19,7 +19,7 @@ npm run typecheck
 node src/cli.ts --help
 ```
 
-The repository is private; readers need repository access. No npm registry publication is required. `npm link` optionally installs the `codepat` command from this checkout; `node src/cli.ts` works without linking. There is no build step or external runtime dependency. Node's built-in TypeScript stripping and SQLite provide execution/storage. Development dependencies are pinned in `package-lock.json`.
+This repository contains source and example configuration, not a running service. Running CodePat requires your own service and agent credentials; publishing or cloning this repository does not expose or deploy an endpoint. No npm registry publication is required. `npm link` optionally installs the `codepat` command from this checkout; `node src/cli.ts` works without linking. There is no build step or external runtime dependency. Node's built-in TypeScript stripping and SQLite provide execution/storage. Development dependencies are pinned in `package-lock.json`.
 
 For a real host, follow [setup](docs/setup.md) in order: Linux/systemd and Herdr, agent authentication, GitHub access, Sokosumi registration/workspace access, private configuration, trusted proxy/TLS, then explicit service installation. Installing the service starts it; the test quickstart above does not.
 
