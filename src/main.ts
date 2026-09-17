@@ -1,3 +1,4 @@
+import { chatTimeoutMs, reconcileDeadTurn } from "./recovery.ts";
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -10,6 +11,7 @@ import { createCodePatServer } from "./http.ts";
 import { Runtime } from "./runtime.ts";
 import { type Job, record, State, textField } from "./state.ts";
 
+const turnTimeout = chatTimeoutMs(process.env.CODEPAT_CHAT_TIMEOUT_MS ?? 600_000);
 const source = dirname(fileURLToPath(import.meta.url));
 const exec = promisify(execFile);
 const dataDir = resolve(
@@ -147,65 +149,19 @@ async function ensureRunner(): Promise<void> {
     }
     for (const job of state.all<Job>("jobs")) {
       if (job.status === "in_progress") {
-        const { stdout } = await exec("systemctl", [
-          "--user",
-          "show",
-          `codepat-turn-${job.id}.service`,
-          "--property=ActiveState",
-          "--value",
-        ]);
-        if (!["inactive", "failed"].includes(stdout.trim())) {
-          console.error(
-            "Previous CodePat turn is still supervised; waiting before replacing its runner.",
-          );
+        const stem = job.reservationProtocol === 1 ? `${job.id}.${job.generation ?? 0}` : job.id;
+        const { stdout } = await exec("systemctl", ["--user", "show", `codepat-turn-${stem}.service`, "--property=ActiveState,LoadState"]);
+        const fields = Object.fromEntries(stdout.trim().split("\n").map(line => line.split("=")));
+        if (!["inactive", "failed"].includes(fields.ActiveState) && fields.LoadState !== "not-found") {
+          console.error("Previous turn is still supervised; no replacement runner launched.");
           return;
         }
-        const completionPath = join(
-          orchestratorDir,
-          `${job.id}.completion.json`,
-        );
-        const outputPath = join(orchestratorDir, `${job.id}.txt`);
-        let completion: Record<string, unknown> = {};
-        if (existsSync(completionPath)) {
-          try {
-            const saved = record(
-              JSON.parse(readFileSync(completionPath, "utf8")),
-            );
-            if (
-              saved.jobId === job.id &&
-              typeof saved.text === "string" &&
-              (saved.error === undefined || typeof saved.error === "string") &&
-              (saved.threadId === undefined ||
-                typeof saved.threadId === "string")
-            )
-              completion = saved;
-          } catch {
-            console.error(
-              "Invalid completion file; recovering interrupted output.",
-            );
-          }
-        }
-        if (typeof completion.threadId === "string")
-          state.put("threads", job.conversationId, completion.threadId);
-        const text =
-          typeof completion.text === "string"
-            ? completion.text
-            : existsSync(outputPath)
-              ? readFileSync(outputPath, "utf8")
-              : "";
-        runtime.completeJob(
-          job.id,
-          text ||
-            "CodePat runner stopped before returning a result. Existing workers are retained; inspect status before retrying.",
-          typeof completion.error === "string"
-            ? completion.error
-            : typeof completion.text === "string" && completion.text.trim()
-              ? undefined
-              : "runner_interrupted",
-        );
+        reconcileDeadTurn(runtime, orchestratorDir, job.id, {
+          runnerGone: shellReady, activeState: fields.ActiveState, loadState: fields.LoadState,
+        });
       }
     }
-    const command = `CODEPAT_CONFIG=${shellQuote(join(dataDir, "client.json"))} ${shellQuote(process.execPath)} ${shellQuote(join(source, "runner.ts"))}`;
+    const command = `CODEPAT_CHAT_TIMEOUT_MS=${turnTimeout} CODEPAT_CONFIG=${shellQuote(join(dataDir, "client.json"))} ${shellQuote(process.execPath)} ${shellQuote(join(source, "runner.ts"))}`;
     await herdr.call(["pane", "run", pane, command]);
     startedAt = Date.now();
   } finally {

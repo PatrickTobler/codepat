@@ -10,3 +10,6 @@ CODEPAT_PORT=3210
 # CODEPAT_REPOSITORIES_JSON={"example":"/absolute/path/to/example"}
 # CODEPAT_WORKER_IDLE_MS=900000
 # HERDR_SOCKET_PATH=/absolute/path/to/herdr.sock
+
+# Chat turns default to 10 minutes; whole seconds from 60000 to 3600000 ms.
+CODEPAT_CHAT_TIMEOUT_MS=600000

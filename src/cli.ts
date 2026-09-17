@@ -7,6 +7,7 @@ import { control } from "./client.ts";
 const [action, ...args] = process.argv.slice(2);
 if (action === "--help" || action === "help" || !action) {
   console.log(`CodePat (Node 24)
+recover-chat <response-id> --reconciled --file <reconciliation>
 status | repositories | instances | workers | projects | project <uuid>
 start <stable-key> --file <prompt> --project <uuid> [--repo <path>] [--base <branch>] [--kind codex|claude]
 send|resume <worker> --file <instructions> | stop|read <worker>
@@ -36,6 +37,10 @@ const jobId = process.env.CODEPAT_JOB_ID;
 let body: Record<string, unknown> = { jobId };
 let route = action;
 switch (action) {
+  case "recover-chat":
+    if (!args.includes("--reconciled")) throw new Error("Explicit reconciliation is required");
+    body = { jobId, responseId: args[0], reconciled: true, reconciliation: readFileSync(option("--file"), "utf8") };
+    break;
   case "status":
     break;
   case "project":
