@@ -1,0 +1,26 @@
+{
+  "name": "@patricktobler/codepat",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "24.x"
+  },
+  "scripts": {
+    "start": "node src/main.ts",
+    "test": "node --test src/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "cli": "node src/cli.ts",
+    "service:install": "node src/install.ts",
+    "register": "node src/register.ts"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.5",
+    "typescript": "7.0.2"
+  },
+  "version": "0.1.0",
+  "license": "MIT",
+  "description": "Standalone Sokosumi and Herdr coding orchestrator",
+  "bin": {
+    "codepat": "src/cli.ts"
+  }
+}

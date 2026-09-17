@@ -1,0 +1,12 @@
+# systemd EnvironmentFile syntax; absolute paths, no shell expansion.
+# Keep real config outside the checkout, mode 600.
+CODEPAT_ORGANIZATION_ID=replace-with-organization-id
+CODEPAT_REPO=/absolute/path/to/default-checkout
+CODEPAT_PORT=3210
+# CODEPAT_DATA_DIR=/absolute/private/state-directory
+# CODEPAT_API_URL=https://api.sokosumi.com/v1
+# CODEPAT_COWORKER_ID=replace-with-coworker-id
+# CODEPAT_API_KEY=replace-with-dedicated-coworker-key
+# CODEPAT_REPOSITORIES_JSON={"example":"/absolute/path/to/example"}
+# CODEPAT_WORKER_IDLE_MS=900000
+# HERDR_SOCKET_PATH=/absolute/path/to/herdr.sock

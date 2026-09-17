@@ -1,0 +1,18 @@
+CodePat standalone distribution
+
+The initial src/, CODEPAT.md, package/TypeScript configuration and deployment
+script implementation were extracted from apps/codepat in:
+https://github.com/masumi-network/sokosumi
+
+Source checkout reference: fbc5abdbf5e4d3c0ecf9fe6459789f651ba19a9d.
+The working implementation was read on 2026-09-17 and may include changes beyond
+that commit. This reference identifies provenance, not a byte-identical release.
+
+The source repository's MIT license is reproduced verbatim in LICENSE:
+Copyright (c) 2024 NMKR.
+
+This distribution adds standalone packaging, sanitized reproduction guides and
+Sokosumi project integration. It does not relicense or claim ownership of upstream
+code. Herdr, Codex, Claude Code, Node.js and other tools are separately installed
+products with their own licenses and service/account requirements. Their binaries,
+credentials and source repositories are not bundled here.

@@ -1,0 +1,7 @@
+{
+  "apiUrl": "https://api.sokosumi.com/v1",
+  "token": "replace-with-task-owner-user-credential",
+  "userId": "replace-with-owner-user-id",
+  "organizationId": "replace-with-organization-id",
+  "organizationSlug": "replace-with-organization-slug"
+}
