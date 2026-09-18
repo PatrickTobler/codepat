@@ -2,11 +2,21 @@ import { ProgressJournal } from "./progress.ts";
 import { dirname } from "node:path";
 import { existsSync, readFileSync, renameSync, writeFileSync, openSync, closeSync, fsyncSync } from "node:fs";
 
-export function chatTimeoutMs(value: unknown = 600_000): number {
+export function chatTimeoutMs(value: unknown = 3_600_000): number {
   const timeout = Number(value);
   if (!Number.isInteger(timeout) || timeout < 60_000 || timeout > 3_600_000 || timeout % 1000)
     throw new Error("CODEPAT_CHAT_TIMEOUT_MS must be whole seconds between 60000 and 3600000");
   return timeout;
+}
+export function turnTimeouts(env: Record<string, string | undefined> = process.env) {
+  const chatMs = chatTimeoutMs(env.CODEPAT_CHAT_TIMEOUT_MS ?? 3_600_000);
+  let backgroundMs: number;
+  try { backgroundMs = chatTimeoutMs(env.CODEPAT_BACKGROUND_TIMEOUT_MS ?? 3_600_000); }
+  catch { throw new Error("CODEPAT_BACKGROUND_TIMEOUT_MS must be whole seconds between 60000 and 3600000"); }
+  return { chatMs, backgroundMs };
+}
+export function turnDeadlines(kind: string, timeouts: ReturnType<typeof turnTimeouts>) {
+  return deadlines(kind === "chat" ? timeouts.chatMs : timeouts.backgroundMs);
 }
 export function deadlines(timeout: number) {
   return { runtimeSeconds: chatTimeoutMs(timeout) / 1000, stopSeconds: 5, watchdogMs: timeout + 10_000 };

@@ -1,5 +1,5 @@
 import { CodexProgress, ProgressJournal } from "./progress.ts";
-import { chatTimeoutMs, deadlines, failureKind, failureText, saveReceipt, type TurnReceipt } from "./recovery.ts";
+import { turnTimeouts, turnDeadlines, failureKind, failureText, saveReceipt, type TurnReceipt } from "./recovery.ts";
 import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFile, unlink } from "node:fs/promises";
@@ -18,7 +18,7 @@ process.env.XDG_RUNTIME_DIR ??= `/run/user/${userInfo().uid}`;
 process.env.DBUS_SESSION_BUS_ADDRESS ??= `unix:path=${process.env.XDG_RUNTIME_DIR}/bus`;
 const herdr = new Herdr();
 const runnerId = randomUUID();
-const chatDeadline = chatTimeoutMs(process.env.CODEPAT_CHAT_TIMEOUT_MS ?? 600_000);
+const timeouts = turnTimeouts();
 const pane = process.env.HERDR_PANE_ID;
 if (!pane || process.env.HERDR_ENV !== "1")
   throw new Error("CodePat runner must run in a Herdr pane");
@@ -109,7 +109,7 @@ while (!stopping) {
     const receiptPath = join(process.cwd(), `${stem}.turn.json`);
     const receipt: TurnReceipt = { jobId: id, attempt: generation, launched: false };
     const output = join(process.cwd(), `${stem}.txt`);
-    const limits = deadlines(job.kind === "chat" ? chatDeadline : 180_000);
+    const limits = turnDeadlines(textField(job, "kind"), timeouts);
     const threadId =
       typeof next.threadId === "string" ? next.threadId : undefined;
     const recovery = typeof record(next.context).recoveryNote === "string"
