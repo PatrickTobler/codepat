@@ -882,6 +882,7 @@ export class Runtime implements ChatService {
       jobConfig,
       threadId: job.kind === "review" ? undefined : this.state.get<string>("threads", job.conversationId),
       context: job.kind === "review" ? {
+        contactPolicy: { taskCoordination: this.contacts.coordinationAllowed({ userId: this.conversationOwner(job.conversationId) ?? "", organizationId: this.state.get<Conversation>("conversations", job.conversationId)?.metadata.sokosumi_organization_id ?? "" }) },
         review: this.reviews.context(this.state.get<Conversation>("conversations", job.conversationId)!),
         instructions: "Metadata only. Use scoped read/workers for details as needed. Do not infer missing authorization.",
       } : {
@@ -1469,6 +1470,11 @@ export class Runtime implements ChatService {
       if (action === "contacts") return this.contacts.lookup(scope, textField(body, "query"));
       const key = textField(body, "key");
       if (action === "dm-status") return this.contacts.get(scope, key);
+      if (job.kind === "review" && ["dm-send", "dm-retry"].includes(action)) {
+        const purpose = action === "dm-send" ? body.coordination : this.contacts.get(scope, key).request.coordination;
+        if (typeof purpose !== "string" || !purpose.trim() || !this.contacts.coordinationAllowed(scope))
+          throw new Error("Periodic contact requires the scoped standing coordination preference and task purpose");
+      }
       if (action === "dm-retry") return this.contacts.retry(scope, key);
       const queued = this.contacts.queue(scope, key, body);
       // Return a final local state when possible; intent is durable first. The

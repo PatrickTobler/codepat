@@ -505,3 +505,15 @@ test("coordination purpose is bounded and worker credentials remain reporting-on
     assert.equal(f.runtime.authorizeControl(token,"dm-send",{jobId:f.job.id,coordination:"Task work"}),false);
   } finally { f.close(); }
 });
+
+test("periodic review contact requires standing preference plus task purpose", async () => {
+  const f = fixture();
+  try {
+    const job = f.runtime.job(f.job.id); job.kind = "review"; job.reviewOwner = scope.userId; job.reviewOrganization = scope.organizationId; f.state.put("jobs", job.id, job);
+    await assert.rejects(f.runtime.control("dm-send", { jobId: job.id, key: "periodic", ...message }), /Periodic contact/);
+    coordinationPreference(f, true);
+    await assert.rejects(f.runtime.control("dm-send", { jobId: job.id, key: "periodic", ...message }), /Periodic contact/);
+    const accepted = await f.runtime.control("dm-send", { jobId: job.id, key: "periodic", ...message, coordination: "Arrange the authorized task review" }) as DirectSend;
+    assert.equal(accepted.status, "accepted"); assert.equal(f.calls.filter(c => c.path.endsWith("/messages")).length, 1);
+  } finally { f.close(); }
+});

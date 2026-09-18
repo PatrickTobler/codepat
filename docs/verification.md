@@ -5,7 +5,6 @@ This standalone extraction was checked on 2026-09-17 with Node 24.21.0 and npm 1
 - `npm ci --ignore-scripts`: clean locked dependency installation; zero reported vulnerabilities.
 - `npm test`: 86 passed, 0 failed, 0 skipped. Tests use temporary SQLite databases, local HTTP fixtures, synthetic identities and temporary Git repositories.
 
-- `npm test`: 81 passed, 0 failed, 0 skipped. Tests use temporary SQLite databases, local HTTP fixtures, synthetic identities and temporary Git repositories.
 - `npm run typecheck`: passed.
 - `node src/cli.ts --help`: passed without service/config/credentials.
 - `git diff --check` and staged content/path review: no whitespace errors or private runtime artifacts. Only source, tests, documentation, license, package metadata and example configs are included.
@@ -27,3 +26,5 @@ The chat-recovery extension adds twelve tests for configurable deadlines, distin
 ## Periodic orchestration review
 
 Local validation of the periodic-review change: locked `npm ci --ignore-scripts`, `npm test` (101 passed, zero failures/skips), `npm run typecheck`, CLI help and `git diff --check`. Tests ran with disk-backed `TMPDIR` because the host tmpfs quota was full. Twenty new synthetic tests cover twenty-minute boundaries/disablement, durable restart deduplication, no catch-up burst, foreground priority and active overlap, no-op silence, owner/organization/conversation isolation, scope identity changes, credential denial, approval/uncertain/queued-send holds, safe same-worker continuation, completed stage versus parent completion, bounded context and repeated-notification suppression. No live periodic AI turn, production message or deployment was performed.
+
+Contact integration with current main preserves recovery, periodic review and the deployed user-bus environment fix. Full integrated checks supersede the historical branch-specific counts above; see the current PR checks.
