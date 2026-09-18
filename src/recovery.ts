@@ -1,3 +1,4 @@
+import { protocolFailureText } from "./turn-failure.ts";
 import { ProgressJournal } from "./progress.ts";
 import { dirname } from "node:path";
 import { existsSync, readFileSync, renameSync, writeFileSync, openSync, closeSync, fsyncSync } from "node:fs";
@@ -27,6 +28,7 @@ export interface TurnReceipt {
   launched: boolean;
   threadId?: string;
   completed?: boolean;
+  failure?: string;
 }
 export function saveReceipt(path: string, value: unknown): void {
   writeFileSync(`${path}.tmp`, JSON.stringify(value), { mode: 0o600 });
@@ -65,7 +67,7 @@ export function failureText(kind: string): string {
     recovery_required: "The previous turn stopped without a confirmed completion.",
     recovery_limit: "The bounded recovery limit was reached.",
   };
-  return `${reasons[kind] ?? "The runner could not finish this turn."} Existing workers and actions remain tracked. Inspect completed actions and uncertain deliveries before requesting recovery; do not start duplicate work.`;
+  return `${reasons[kind] ?? protocolFailureText(kind) ?? "The runner could not finish this turn."} Existing workers and actions remain tracked. Inspect completed actions and uncertain deliveries before requesting recovery; do not start duplicate work.`;
 }
 
 // Only the host supervisor calls this after checking the pane process and unit.
@@ -95,6 +97,7 @@ export function reconcileDeadTurn(
     const thread = saved?.threadId ?? turn?.threadId;
     if (job.kind !== "review" && typeof thread === "string") runtime.state.put("threads", job.conversationId, thread);
     if (saved) runtime.completeJob(id, saved.text as string, saved.error as string | undefined);
+    else if (typeof turn?.failure === "string" && protocolFailureText(turn.failure)) runtime.completeJob(id, failureText(turn.failure), turn.failure);
     else if (turn?.completed === true && existsSync(`${directory}/${stem}.txt`)) {
       const text = readFileSync(`${directory}/${stem}.txt`, "utf8");
       if (text.trim()) runtime.completeJob(id, text);

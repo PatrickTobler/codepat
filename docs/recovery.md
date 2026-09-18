@@ -57,3 +57,14 @@ Tests use synthetic temporary state and local subprocesses. They cover killed pr
 ## Missing completed sessions
 
 A completed worker can retain a saved result and stale pane after a host/session interruption without being marked archived. `read` returns saved evidence with `missing: true` rather than implying the parent task is done. An explicitly authorized `resume` now checks the recorded pane is absent or an idle shell before restoring the same worker/worktree/session. A live unidentified process is a recovery block, not permission to duplicate it. Existing approval holds or sending/uncertain instructions return `status: recovery_blocked` with the held delivery IDs, without changing state or sending new instructions. Inspect the saved result/session and reconcile historical outcomes and the actual pending human decision first. This does not add an API for clearing uncertainty or approving unknown dialogs; a resume request alone is not evidence that old external actions did not occur.
+
+
+## Codex/provider failures versus process deadlines
+
+Codex exec emits top-level `error` and `turn.failed` JSONL events, as documented in the [official non-interactive guide](https://developers.openai.com/es-419/docs/non-interactive-mode). CodePat projects only those event envelopes into fixed diagnostic categories: provider safety restriction, authentication, usage/rate/context limit, connection failure or unknown provider failure. It never sends arbitrary error messages, response bodies, URLs, stderr, tool output or reasoning to users. Message-only exec errors use a narrow allowlist of known phrases; unknown errors remain explicitly unknown.
+
+A terminal failure stays failed even if partial final text exists or a process exits zero. A transient `error` followed by successful completion does not turn success into failure. Systemd timeout, OOM or signal evidence takes precedence. The sanitized terminal category is fsynced in the attempt receipt and preserved through runner death; the completion stores its fixed code/text in the existing durable job. No new retry or external action is introduced.
+
+Provider safety-policy rejection is not a timeout and is not evidence of host resource exhaustion. Resolve it through supported provider access/review channels where appropriate; do not automatically replay, rephrase to evade the restriction, switch credentials or weaken approvals. A generic nonzero exit without recognized protocol evidence remains an unknown process failure. Historic exact causes cannot always be recovered: inspect only the affected turn's authorized private session error metadata, never publish its transcript.
+
+These diagnostics require a new pinned bridge/runner release after a natural drain. A previous deadline-only deployment does not activate this addition. Keep the one-hour settings and all worker/state identities; no active coordinator interruption is required or permitted.

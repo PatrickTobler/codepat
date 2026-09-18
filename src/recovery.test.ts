@@ -207,3 +207,25 @@ test("chat and every background turn use validated independent hour budgets", ()
   assert.equal(failureKind("timeout", 1, false, false, true), "turn_timeout");
   assert.equal(failureKind("success", 0, true, false, true), "turn_timeout");
 });
+
+
+test("terminal provider diagnosis survives runner death without replaying the turn", t => {
+  const f = fixture(t);
+  const stem = `${f.job.id}.0`;
+  saveReceipt(join(f.dir, `${stem}.turn.json`), {jobId:f.job.id,attempt:0,launched:true,failure:"provider_policy"});
+  assert.equal(reconcileDeadTurn(f.runtime,f.dir,f.job.id,dead),true);
+  assert.equal(f.runtime.job(f.job.id).status,"failed");
+  assert.equal(f.runtime.job(f.job.id).error,"provider_policy");
+  assert.equal(f.runtime.nextJob("replacement",1),null);
+  assert.equal(f.state.all("workers").length,0);
+  assert.equal(f.state.all("deliveries").length,0);
+});
+
+test("unrecognized persisted diagnostic cannot become user text or authorize retry", t => {
+  const f = fixture(t);
+  saveReceipt(join(f.dir, `${f.job.id}.0.turn.json`), {jobId:f.job.id,attempt:0,launched:true,failure:"private-injected-body"});
+  reconcileDeadTurn(f.runtime,f.dir,f.job.id,dead);
+  assert.equal(f.runtime.job(f.job.id).error,"recovery_required");
+  assert.doesNotMatch(JSON.stringify(f.runtime.job(f.job.id)),/private-injected-body/);
+  assert.equal(f.runtime.nextJob("replacement",1),null);
+});
