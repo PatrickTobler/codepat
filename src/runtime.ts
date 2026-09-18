@@ -1546,7 +1546,9 @@ export class Runtime implements ChatService {
           }
           // Preflight a distinct, not-yet-accepted report. Never retry uncertain POSTs.
           const remote=record((await this.api(`/tasks/${taskId}`,"GET",undefined,headers)).data);
-          if(remote.assigneeId!==this.config.coworkerId)throw new Error("Task assignment changed before reporting");
+          const currentConversation=item.conversationId ? this.state.get<Conversation>("conversations",item.conversationId) : undefined;
+          if(!conversation || !currentConversation || conversation.owner!==currentConversation.owner || conversation.metadata.sokosumi_organization_id!==currentConversation.metadata.sokosumi_organization_id || !conversation.metadata.sokosumi_organization_id)throw new Error("Report conversation scope changed or is unknown");
+          if(remote.assigneeId!==this.config.coworkerId || (remote.ownerId??remote.userId)!==conversation.owner || remote.organizationId!==conversation.metadata.sokosumi_organization_id)throw new Error("Task owner, organization or assignment changed before reporting");
           if(remote.status===item.requestedTaskStatus)delete item.body.status;
           else item.body.status=item.requestedTaskStatus;
           if(this.state.get<Outbox>("outbox",item.id)?.status!=="pending")continue;
@@ -1807,10 +1809,10 @@ export class Runtime implements ChatService {
           label ? noticeText(label,content,[{taskId:job.taskId}]) : content,
           status === task.status ? undefined : status,
         );
-        if(status){
-          const delivery=this.state.get<Outbox>("outbox",notificationId)!;
-          delivery.requestedTaskStatus=status;this.state.put("outbox",notificationId,delivery);
-        }
+        const delivery=this.state.get<Outbox>("outbox",notificationId)!;
+        delivery.conversationId=job.conversationId;
+        if(status)delivery.requestedTaskStatus=status;
+        this.state.put("outbox",notificationId,delivery);
         this.state.put("taskReportReceipts",receipt,{notificationId});
         this.state.put("jobTaskReport",job.id,content);
         return this.taskReportResult(notificationId);
