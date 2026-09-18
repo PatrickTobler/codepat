@@ -1,3 +1,4 @@
+import { auditTaskProjects } from "./task-projects.ts";
 import { MAX_PROGRESS, validateProgress, type Progress } from "./progress.ts";
 import { Reviews, reviewInterval, type ReviewWork } from "./review.ts";
 import { failureText } from "./recovery.ts";
@@ -135,6 +136,7 @@ export class Runtime implements ChatService {
         "recover-chat",
         "review-status",
         "review-work",
+        "task-projects",
         "projects",
         "project",
         "start",
@@ -566,15 +568,29 @@ export class Runtime implements ChatService {
         `Task created but cannot start: ${String(task.status)}. ${worker.taskUrl}`,
       );
   }
-  confirmWorkerProject(worker: Worker, task: Record<string, unknown>): void {
+  validateWorkerProject(worker: Worker, task: Record<string, unknown>): void {
+    if (!Object.hasOwn(task, "projectId")) throw new Error("Task response omitted project assignment; cached selection retained for reconciliation");
+    if (task.projectId !== null) projectId(task.projectId);
     if (worker.projectUnconfirmed && task.projectId !== worker.projectId)
       throw new Error("Task project is still unconfirmed; correct the existing task before recovery");
+  }
+  confirmWorkerProject(worker: Worker, task: Record<string, unknown>): void {
+    this.validateWorkerProject(worker, task);
     worker.projectUnconfirmed = false;
     worker.projectId = typeof task.projectId === "string" ? task.projectId : undefined;
     this.state.put("workers", worker.id, worker);
   }
   async prepareFollowup(worker: Worker, instruction: string): Promise<void> {
     if (!worker.taskId) return;
+    const conversation = this.state.get<Conversation>("conversations", worker.conversationId);
+    if (!conversation || !conversation.metadata.sokosumi_organization_id) throw new Error("Follow-up requires known requester organization; reconcile legacy context first");
+    const task = record(
+      (await this.api(`/tasks/${encodeURIComponent(worker.taskId)}`, "GET", undefined, this.contextHeaders(conversation))).data,
+    );
+    if (task.assigneeId !== this.config.coworkerId)
+      throw new Error("Task is no longer assigned to CodePat");
+    this.assertTaskOwner(task, conversation);
+    this.validateWorkerProject(worker, task);
     const eventPath = `/tasks/${encodeURIComponent(worker.taskId)}/events`;
     for (const item of this.state.all<Outbox>("outbox")) {
       if (item.path !== eventPath || item.body.status !== "COMPLETED") continue;
@@ -587,11 +603,6 @@ export class Runtime implements ChatService {
         this.state.put("outbox", item.id, item);
       }
     }
-    const task = record(
-      (await this.api(`/tasks/${encodeURIComponent(worker.taskId)}`)).data,
-    );
-    if (task.assigneeId !== this.config.coworkerId)
-      throw new Error("Task is no longer assigned to CodePat");
     this.confirmWorkerProject(worker, task);
     if (task.status === "COMPLETED") {
       await this.api(
@@ -1516,6 +1527,18 @@ export class Runtime implements ChatService {
       // independent delivery loop also recovers queued work after disconnects.
       await this.contacts.deliverQueued(queued.id);
       return this.contacts.get(scope, key);
+    }
+    if (action === "task-projects") {
+      if (Object.keys(body).some(key => !["jobId", "repository", "projectId"].includes(key))) throw new Error("Unsupported task inventory arguments");
+      const conversation = this.projectConversation(job);
+      const expected = body.projectId === undefined ? undefined : projectId(body.projectId);
+      if (expected && typeof body.repository !== "string") throw new Error("Expected project comparison requires an explicit repository filter");
+      const owned = this.workers(job);
+      const repository = body.repository === undefined ? undefined : textField(body, "repository");
+      const selectedRepo = repository === "default" ? this.config.repo : repository ? this.config.repositories?.[repository] ?? repository : undefined;
+      const ids = new Set(owned.filter(w => !selectedRepo || w.repo === selectedRepo).map(w => w.taskId));
+      if (selectedRepo && !ids.size) throw new Error("No owned tracked tasks match this repository");
+      return auditTaskProjects(this.api.bind(this), owned.filter(w => ids.has(w.taskId)), { userId: conversation.owner, organizationId: textField(conversation.metadata, "sokosumi_organization_id") }, expected);
     }
     if (action === "projects")
       return pages(this.api.bind(this), "/projects", this.contextHeaders(this.projectConversation(job)));

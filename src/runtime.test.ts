@@ -401,7 +401,7 @@ test("follow-up reopens completed assigned task and preserves worker identity", 
   const f = fixture();
   try {
     f.runtime.config.coworkerId = "codepat";
-    const c = f.runtime.createConversation("alice", {});
+    const c = f.runtime.createConversation("alice", { sokosumi_organization_id: "org" });
     const job = f.runtime.createResponse("alice", c.id, "follow up");
     f.runtime.nextJob();
     f.state.put("workers", "a", {
@@ -417,7 +417,7 @@ test("follow-up reopens completed assigned task and preserves worker identity", 
         assert.equal((body as { status: string }).status, "RUNNING");
         return { data: {} };
       }
-      return { data: { assigneeId: "codepat", status: "COMPLETED" } };
+      return { data: { ownerId: "alice", organizationId: "org", assigneeId: "codepat", projectId: null, status: "COMPLETED" } };
     };
     await f.runtime.control("send", {
       jobId: job.id,
@@ -437,7 +437,7 @@ test("follow-up supersedes queued completion before dispatch", async () => {
   try {
     f.runtime.config.coworkerId = "codepat";
     f.runtime.config.apiKey = "test";
-    const c = f.runtime.createConversation("alice", {});
+    const c = f.runtime.createConversation("alice", { sokosumi_organization_id: "org" });
     const job = f.runtime.createResponse("alice", c.id, "continue");
     f.runtime.nextJob();
     f.state.put("workers", "a", {
@@ -450,7 +450,7 @@ test("follow-up supersedes queued completion before dispatch", async () => {
     const posted: string[] = [];
     f.runtime.api = async (path, method) => {
       if (method === "POST") posted.push(path);
-      return { data: { assigneeId: "codepat", status: "RUNNING" } };
+      return { data: { ownerId: "alice", organizationId: "org", assigneeId: "codepat", projectId: null, status: "RUNNING" } };
     };
     await f.runtime.control("send", {
       jobId: job.id,
@@ -807,7 +807,7 @@ test("restart reconciles interrupted starts without creating duplicate workers",
     };
     const restarted = new Runtime(f.state, f.herdr, f.runtime.config);
     assert.equal(f.state.get<Worker>("workers", w.id)?.state, "launch_failed");
-    restarted.assertAssigned = async () => ({});
+    restarted.assertAssigned = async () => ({projectId: null});
     await restarted.recoverWorkers();
     assert.ok(
       !calls.some((args) => args.includes("start") || args.includes("create")),
@@ -840,7 +840,7 @@ test("worker starts from a user-requested local checkout without configuring an 
     ]);
     f.runtime.config.coworkerId = "codepat";
     f.runtime.api = async () => ({
-      data: { assigneeId: "codepat", status: "READY", ownerId: "alice", organizationId: "example-org" },
+      data: { assigneeId: "codepat", projectId: null, status: "READY", ownerId: "alice", organizationId: "example-org" },
     });
     f.state.put("meta", "workspace", "w1");
     f.herdr.call = async (args) =>
@@ -882,7 +882,7 @@ test("worker starts from a user-requested local checkout without configuring an 
 test("resume retries a repaired failed launch on the same worker and task", async () => {
   const f = fixture();
   try {
-    const c = f.runtime.createConversation("alice", {});
+    const c = f.runtime.createConversation("alice", { sokosumi_organization_id: "org" });
     const job = f.runtime.createResponse(
       "alice",
       c.id,
@@ -902,7 +902,7 @@ test("resume retries a repaired failed launch on the same worker and task", asyn
     f.state.put("meta", "workspace", "w1");
     f.runtime.config.coworkerId = "codepat";
     f.runtime.api = async () => ({
-      data: { assigneeId: "codepat", status: "RUNNING" },
+      data: { ownerId: "alice", organizationId: "org", assigneeId: "codepat", projectId: null, status: "RUNNING" },
     });
     f.setAgents([]);
     f.herdr.call = async (args) =>

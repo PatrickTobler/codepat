@@ -10,6 +10,7 @@ if (action === "--help" || action === "help" || !action) {
 review-status | review-work <worker> --state pending|waiting|done --file <note>
 recover-chat <response-id> --reconciled --file <reconciliation>
 status | repositories | instances | workers | projects | project <uuid>
+task-projects [--repo <tracked-path-or-alias>] [--project <expected-uuid>]
 contacts <name-or-email>
 dm-send <stable-key> (--to <name-or-email> | --recipient <verified-user-id>) [--room <uuid>] [--coordination <authorized-task-purpose>] --file <message>
 dm-status <stable-key> | dm-retry <stable-key>
@@ -41,6 +42,9 @@ const jobId = process.env.CODEPAT_JOB_ID;
 let body: Record<string, unknown> = { jobId };
 let route = action;
 switch (action) {
+  case "task-projects":
+    body = { jobId, ...(args.includes("--repo") ? { repository: option("--repo") } : {}), ...(args.includes("--project") ? { projectId: option("--project") } : {}) };
+    break;
   case "contacts":
     body = { jobId, query: args[0] };
     break;
