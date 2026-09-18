@@ -9,7 +9,7 @@ if (action === "--help" || action === "help" || !action) {
   console.log(`CodePat (Node 24)
 status | repositories | instances | workers | projects | project <uuid>
 contacts <name-or-email>
-dm-send <stable-key> (--to <name-or-email> | --recipient <verified-user-id>) [--room <uuid>] --file <message>
+dm-send <stable-key> (--to <name-or-email> | --recipient <verified-user-id>) [--room <uuid>] [--coordination <authorized-task-purpose>] --file <message>
 dm-status <stable-key> | dm-retry <stable-key>
 start <stable-key> --file <prompt> --project <uuid> [--repo <path>] [--base <branch>] [--kind codex|claude]
 send|resume <worker> --file <instructions> | stop|read <worker>
@@ -53,6 +53,7 @@ switch (action) {
       jobId, key: args[0], text: readFileSync(option("--file"), "utf8"),
       ...(args.includes("--to") ? { query: option("--to") } : { recipientId: option("--recipient") }),
       ...(args.includes("--room") ? { roomId: option("--room") } : {}),
+      ...(args.includes("--coordination") ? { coordination: option("--coordination") } : {}),
     };
     break;
   case "status":

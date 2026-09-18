@@ -15,7 +15,7 @@ export interface Contact { id: string; name: string; email: string }
 export interface DirectSend extends ContactScope {
   id: string;
   key: string;
-  request: { query?: string; recipientId?: string; roomId?: string; content: string };
+  request: { query?: string; recipientId?: string; roomId?: string; content: string; coordination?: string };
   recipient?: Contact;
   roomId?: string;
   messageId?: string;
@@ -69,14 +69,18 @@ function privateJson(path: string): unknown {
 
 // Configuration is selected by stored request identity, never by model-supplied
 // paths, headers or identity claims. Reuse the private owner-config format.
-export function contactOwnerApi(config: ContactConfig, scope: ContactScope): Api {
+function contactAccountEntry(config: ContactConfig, scope: ContactScope): Record<string, unknown> {
   if (!config.contactAccountsFile) throw new Error("Directory access is not configured for this user/organization");
   const entries = privateJson(config.contactAccountsFile);
   if (!Array.isArray(entries)) throw new Error("Invalid contact account registry");
   const matches = entries.map(record).filter(entry =>
     entry.userId === scope.userId && entry.organizationId === scope.organizationId);
   if (matches.length !== 1) throw new Error("Exactly one directory account is required for this user/organization");
-  const account = record(privateJson(textField(matches[0], "configPath")));
+  return matches[0];
+}
+export function contactOwnerApi(config: ContactConfig, scope: ContactScope): Api {
+  const entry = contactAccountEntry(config, scope);
+  const account = record(privateJson(textField(entry, "configPath")));
   if (account.userId !== scope.userId || account.organizationId !== scope.organizationId)
     throw new Error("Directory account identity does not match the requesting user/organization");
   const apiUrl = typeof account.apiUrl === "string" ? account.apiUrl : "https://api.sokosumi.com/v1";
@@ -189,11 +193,20 @@ export class Contacts {
     return (await this.directory(scope)).filter(user => target.includes("@")
       ? normalized(user.email) === target : normalized(user.name).includes(target));
   }
+  coordinationAllowed(scope: ContactScope): boolean {
+    try { return contactAccountEntry(this.config, scope).taskCoordination === true; }
+    catch { return false; }
+  }
+  private checkCoordination(scope: ContactScope, rationale?: string): void {
+    if (rationale !== undefined && !this.coordinationAllowed(scope))
+      throw new Error("Routine task coordination is not enabled for this requester/organization; an existing standing preference must be configured before proactive contact");
+  }
   queue(scope: ContactScope, key: string, body: Record<string, unknown>): DirectSend {
     const query = body.query === undefined ? undefined : bounded(body.query, "Contact query", 200).trim();
     const recipientId = body.recipientId === undefined ? undefined : bounded(body.recipientId, "Recipient ID", 200);
     if (Boolean(query) === Boolean(recipientId)) throw new Error("Select exactly one contact query or verified recipient ID");
-    const request = { query, recipientId, roomId: body.roomId === undefined ? undefined : uuid(body.roomId), content: bounded(body.text, "Message", 10000) };
+    const coordination = body.coordination === undefined ? undefined : bounded(body.coordination, "Authorized task coordination purpose", 1000).trim();
+    const request = { ...(coordination === undefined ? {} : { coordination }), query, recipientId, roomId: body.roomId === undefined ? undefined : uuid(body.roomId), content: bounded(body.text, "Message", 10000) };
     const lookup = this.key(scope, key);
     return this.state.transaction(() => {
       if (this.state.get("directSendKeys", lookup)) {
@@ -202,6 +215,7 @@ export class Contacts {
         if (JSON.stringify(old.request) !== JSON.stringify(request)) throw new Error("Send key already belongs to a different message/destination");
         return old;
       }
+      this.checkCoordination(scope, coordination);
       this.ready();
       const item: DirectSend = { ...scope, id: randomUUID(), key, request, coworkerId: this.config.coworkerId!, status: "queued", stage: "directory", retrySafe: true, createdAt: Date.now(), updatedAt: Date.now() };
       this.save(item);
@@ -247,6 +261,7 @@ export class Contacts {
     });
     if (!item) return;
     try {
+      this.checkCoordination(item, item.request.coordination);
       this.ready();
       if (item.coworkerId !== this.config.coworkerId) throw new Error("Configured coworker changed; retained send cannot switch sender identity");
       const users = await this.directory(item);

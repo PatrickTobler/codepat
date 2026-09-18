@@ -418,3 +418,90 @@ test("CLI routes contact commands with scoped job and file content, without cred
     ]);
   } finally { server.closeAllConnections(); await new Promise<void>(r => server.close(() => r())); f.close(); }
 });
+
+function coordinationPreference(f: ReturnType<typeof fixture>, enabled: boolean, identity = scope) {
+  const path = join(f.dir, "coordination-registry.json");
+  writeFileSync(path, JSON.stringify([{ ...identity, configPath: join(f.dir, "owner.json"), taskCoordination: enabled }]), { mode: 0o600 });
+  f.contacts.config.contactAccountsFile = path;
+}
+
+test("standing preference permits routine coordination without a separate explicit send request", async () => {
+  const f = fixture();
+  try {
+    coordinationPreference(f, true);
+    const active = f.runtime.job(f.job.id);
+    active.input = "Implement the authorized change and obtain the required review";
+    f.state.put("jobs", active.id, active);
+    const body = { jobId: f.job.id, key: "required-review", ...message, coordination: "Ask the verified collaborator for the already-required review" };
+    const sent = await f.runtime.control("dm-send", body) as DirectSend;
+    assert.equal(sent.status, "accepted"); assert.equal(sent.request.coordination, body.coordination);
+    const repeat = await f.runtime.control("dm-send", body) as DirectSend;
+    assert.equal(repeat.id, sent.id); assert.equal(f.calls.filter(c => c.path.endsWith("/messages")).length, 1);
+    await assert.rejects(f.runtime.control("dm-send", { ...body, coordination: "Make an unrelated commitment" }), /different message/);
+    const next = f.runtime.nextJob("test")!;
+    assert.equal((next.context as {contactPolicy:{taskCoordination:boolean}}).contactPolicy.taskCoordination, true);
+  } finally { f.close(); }
+});
+
+test("coordination preference is requester/org scoped, not a caller-controlled permission", async () => {
+  const f = fixture();
+  try {
+    const proactive = { ...message, coordination: "Clarify a dependency for authorized implementation" };
+    for (const identity of [scope, { ...scope, userId: "other-user" }, { ...scope, organizationId: "other-org" }]) {
+      coordinationPreference(f, identity !== scope, identity);
+      assert.throws(() => f.contacts.queue(scope, "restricted", proactive), /not enabled/);
+    }
+    await assert.rejects(f.runtime.control("dm-send", { jobId: f.job.id, key: "override", ...proactive, taskCoordination: true }), /Unsupported contact/);
+    assert.equal(f.state.all("directSends").length, 0); assert.equal(f.calls.length, 0);
+    // A direct, explicitly requested send remains supported without standing preference.
+    f.contacts.queue(scope, "direct-request", message); await f.contacts.deliver();
+    assert.equal(f.contacts.get(scope, "direct-request").status, "accepted");
+  } finally { f.close(); }
+});
+
+test("revocation stops a queued proactive send after restart before any room/message POST", async () => {
+  const f = fixture();
+  try {
+    coordinationPreference(f, true);
+    f.contacts.queue(scope, "pending-review", { ...message, coordination: "Arrange the requested review" });
+    coordinationPreference(f, false);
+    const restarted = new Contacts(f.state, f.contacts.config); f.wire(restarted);
+    await restarted.deliver();
+    assert.equal(restarted.get(scope, "pending-review").status, "failed");
+    assert.equal(f.calls.length, 0);
+  } finally { f.close(); }
+});
+
+test("standing coordination retains recipient ambiguity and uncertain-post protection", async () => {
+  const f = fixture();
+  try {
+    coordinationPreference(f, true);
+    f.contacts.ownerApi = () => async path => path === "/users/me" ? {data:self} : {data:[self,recipient,{...recipient,id:"second"}].map(user=>({organizationId:scope.organizationId,user}))};
+    f.contacts.queue(scope, "ambiguous-coordination", { query: "Avery", text: message.text, coordination: "Ask for a required review" });
+    await f.contacts.deliver(); assert.equal(f.calls.length, 0);
+    assert.match(f.contacts.get(scope, "ambiguous-coordination").error!, /Ambiguous/);
+    f.wire(f.contacts);
+    f.contacts.senderApi = () => async (path, method, body, headers) => {
+      if (path.endsWith("/messages")) { f.calls.push({path}); throw new Error("Lost response"); }
+      return f.sender(path, method, body, headers);
+    };
+    const item = f.contacts.queue(scope, "uncertain-coordination", { ...message, coordination: "Share a relevant task result" });
+    await f.contacts.deliver(); assert.equal(f.contacts.get(scope, item.key).status, "uncertain");
+    assert.throws(() => f.contacts.retry(scope, item.key), /must not be replayed/);
+    const restarted = new Contacts(f.state, f.contacts.config); f.wire(restarted); await restarted.deliver();
+    assert.equal(f.calls.filter(c => c.path.endsWith("/messages")).length, 1);
+  } finally { f.close(); }
+});
+
+test("coordination purpose is bounded and worker credentials remain reporting-only", () => {
+  const f = fixture();
+  try {
+    coordinationPreference(f, true);
+    for (const coordination of ["", " ", "x".repeat(1001), true]) assert.throws(() => f.contacts.queue(scope, "bad", { ...message, coordination }), /purpose/);
+    const worker = { id:"reporting-worker",generation:1 };
+    f.state.put("workers",worker.id,worker);
+    const file=f.runtime.scopedConfig({kind:"worker",id:worker.id,generation:1});
+    const token=JSON.parse(readFileSync(file,"utf8")).token;
+    assert.equal(f.runtime.authorizeControl(token,"dm-send",{jobId:f.job.id,coordination:"Task work"}),false);
+  } finally { f.close(); }
+});

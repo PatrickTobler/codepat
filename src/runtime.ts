@@ -858,6 +858,7 @@ export class Runtime implements ChatService {
       threadId: this.state.get<string>("threads", job.conversationId),
       context: {
         workerKinds: ["codex", "claude"],
+        contactPolicy: { taskCoordination: this.contacts.coordinationAllowed({ userId: this.conversationOwner(job.conversationId)!, organizationId: this.state.get<Conversation>("conversations", job.conversationId)?.metadata.sokosumi_organization_id ?? "" }) },
         directMessages: this.contacts.recent({
           userId: this.conversationOwner(job.conversationId) ?? "",
           organizationId: this.state.get<Conversation>("conversations", job.conversationId)?.metadata.sokosumi_organization_id ?? "",
@@ -1358,7 +1359,7 @@ export class Runtime implements ChatService {
     }
     if (["contacts", "dm-send", "dm-status", "dm-retry"].includes(action)) {
       const allowed = action === "contacts" ? ["jobId", "query"]
-        : action === "dm-send" ? ["jobId", "key", "query", "recipientId", "roomId", "text"] : ["jobId", "key"];
+        : action === "dm-send" ? ["jobId", "key", "query", "recipientId", "roomId", "text", "coordination"] : ["jobId", "key"];
       if (Object.keys(body).some(key => !allowed.includes(key)))
         throw new Error("Unsupported contact arguments; identity and credentials come from the active request");
       const conversation = this.projectConversation(job);
