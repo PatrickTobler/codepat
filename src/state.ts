@@ -6,7 +6,10 @@ import { DatabaseSync } from "node:sqlite";
 export interface Job {
   id: string;
   conversationId: string;
-  kind: "chat" | "task" | "worker";
+  kind: "chat" | "task" | "worker" | "review";
+  reviewOwner?: string;
+  reviewOrganization?: string;
+  reviewFingerprint?: string;
   input: string;
   status: "queued" | "in_progress" | "completed" | "failed";
   text: string;
@@ -15,6 +18,11 @@ export interface Job {
   workerId?: string;
   createdAt: number;
   submittedAt?: number;
+  generation?: number;
+  recoveryAttempts?: number;
+  recoveryNote?: string;
+  reservationProtocol?: number;
+  turnStarted?: boolean;
 }
 export interface Conversation {
   id: string;
@@ -33,6 +41,7 @@ export interface Worker {
   baseCommit?: string;
   setupInstructions?: string;
   recoveryAttempts?: number;
+  recoveryHold?: boolean;
   nextRecoveryAt?: number;
   taskId?: string;
   taskUrl?: string;
@@ -58,6 +67,7 @@ export interface Delivery {
   createdAt: number;
 }
 export interface Outbox {
+  reviewNotification?: boolean;
   id: string;
   path: string;
   body: Record<string, unknown>;

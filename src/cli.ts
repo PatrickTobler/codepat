@@ -7,6 +7,8 @@ import { control } from "./client.ts";
 const [action, ...args] = process.argv.slice(2);
 if (action === "--help" || action === "help" || !action) {
   console.log(`CodePat (Node 24)
+review-status | review-work <worker> --state pending|waiting|done --file <note>
+recover-chat <response-id> --reconciled --file <reconciliation>
 status | repositories | instances | workers | projects | project <uuid>
 contacts <name-or-email>
 dm-send <stable-key> (--to <name-or-email> | --recipient <verified-user-id>) [--room <uuid>] [--coordination <authorized-task-purpose>] --file <message>
@@ -55,6 +57,15 @@ switch (action) {
       ...(args.includes("--room") ? { roomId: option("--room") } : {}),
       ...(args.includes("--coordination") ? { coordination: option("--coordination") } : {}),
     };
+    break;
+  case "review-status":
+    break;
+  case "review-work":
+    body = { jobId, workerId: args[0], state: option("--state"), text: content };
+    break;
+  case "recover-chat":
+    if (!args.includes("--reconciled")) throw new Error("Explicit reconciliation is required");
+    body = { jobId, responseId: args[0], reconciled: true, reconciliation: readFileSync(option("--file"), "utf8") };
     break;
   case "status":
     break;
