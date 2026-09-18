@@ -1,5 +1,6 @@
+import { TurnFailure } from "./turn-failure.ts";
 import { CodexProgress, ProgressJournal } from "./progress.ts";
-import { chatTimeoutMs, deadlines, failureKind, failureText, saveReceipt, type TurnReceipt } from "./recovery.ts";
+import { turnTimeouts, turnDeadlines, failureKind, failureText, saveReceipt, type TurnReceipt } from "./recovery.ts";
 import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFile, unlink } from "node:fs/promises";
@@ -18,7 +19,7 @@ process.env.XDG_RUNTIME_DIR ??= `/run/user/${userInfo().uid}`;
 process.env.DBUS_SESSION_BUS_ADDRESS ??= `unix:path=${process.env.XDG_RUNTIME_DIR}/bus`;
 const herdr = new Herdr();
 const runnerId = randomUUID();
-const chatDeadline = chatTimeoutMs(process.env.CODEPAT_CHAT_TIMEOUT_MS ?? 600_000);
+const timeouts = turnTimeouts();
 const pane = process.env.HERDR_PANE_ID;
 if (!pane || process.env.HERDR_ENV !== "1")
   throw new Error("CodePat runner must run in a Herdr pane");
@@ -109,7 +110,7 @@ while (!stopping) {
     const receiptPath = join(process.cwd(), `${stem}.turn.json`);
     const receipt: TurnReceipt = { jobId: id, attempt: generation, launched: false };
     const output = join(process.cwd(), `${stem}.txt`);
-    const limits = deadlines(job.kind === "chat" ? chatDeadline : 180_000);
+    const limits = turnDeadlines(textField(job, "kind"), timeouts);
     const threadId =
       typeof next.threadId === "string" ? next.threadId : undefined;
     const recovery = typeof record(next.context).recoveryNote === "string"
@@ -154,6 +155,7 @@ while (!stopping) {
       return progressBusy;
     };
     const progressTimer = setInterval(() => { void flushProgress().catch(() => undefined); }, 200);
+    const protocolFailure = new TurnFailure();
     let newThread: string | undefined;
     let timedOut = false;
     let exitCode: number;
@@ -207,6 +209,10 @@ while (!stopping) {
             )
               { newThread = event.thread_id; receipt.threadId = newThread; saveReceipt(receiptPath, receipt); }
             if (event.type === "turn.completed") { receipt.completed = true; saveReceipt(receiptPath, receipt); }
+            if (protocolFailure.ingest(event) && protocolFailure.terminal) {
+              receipt.failure = protocolFailure.terminal;
+              saveReceipt(receiptPath, receipt);
+            }
             projection.ingest(event);
             // Print normal progress to this pane, never scrape it as the result channel.
             if (event.type === "item.completed") {
@@ -249,7 +255,7 @@ while (!stopping) {
     } catch {
       /* failed process may not write a result */
     }
-    const error = failureKind(unitResult, exitCode, timedOut, stopping, Boolean(text.trim()));
+    const error = protocolFailure.resolve(failureKind(unitResult, exitCode, timedOut, stopping, Boolean(text.trim())));
     const completion = {
       jobId: id, attempt: generation,
       text: error ? failureText(error) : text,

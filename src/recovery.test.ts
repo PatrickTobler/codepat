@@ -5,7 +5,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
-import { chatTimeoutMs, deadlines, failureKind, failureText, reconcileDeadTurn, saveReceipt } from "./recovery.ts";
+import { chatTimeoutMs, turnTimeouts, turnDeadlines, deadlines, failureKind, failureText, reconcileDeadTurn, saveReceipt } from "./recovery.ts";
 import { Runtime } from "./runtime.ts";
 import { State, type Worker } from "./state.ts";
 function fixture(t: TestContext) {
@@ -22,8 +22,8 @@ function fixture(t: TestContext) {
 }
 const dead = { runnerGone: true, activeState: "inactive", loadState: "not-found" };
 
-test("chat deadlines share one validated 10 minute budget and classify systemd timeout before JS watchdog", () => {
-  assert.equal(chatTimeoutMs(), 600000);
+test("turn deadlines retain a validated one hour default and classify systemd timeout before JS watchdog", () => {
+  assert.equal(chatTimeoutMs(), 3600000);
   assert.deepEqual(deadlines(600000), { runtimeSeconds: 600, stopSeconds: 5, watchdogMs: 610000 });
   assert.equal(deadlines(900000).watchdogMs, 910000);
   for (const bad of [0, 59999, 60001, 3600001, "oops"]) assert.throws(() => chatTimeoutMs(bad));
@@ -66,7 +66,8 @@ test("started or legacy turns never replay automatically and begin-turn lost ack
   await assert.rejects(f.runtime.control("begin-turn", { jobId: f.job.id, runnerId: "old" }));
   reconcileDeadTurn(f.runtime, f.dir, f.job.id, dead);
   assert.equal(f.runtime.job(f.job.id).error, "recovery_required");
-  assert.equal(f.runtime.nextJob("replacement", 1), null);
+  const notice=f.runtime.nextJob("replacement",1)!;assert.equal(notice.job.kind,"incident");
+  f.runtime.completeJob(notice.job.id,"[NO_UPDATE]");
   assert.equal(f.state.all("outbox").length, 0);
   const legacy = f.runtime.createResponse("requester", f.c.id, "Legacy", "legacy"); f.runtime.nextJob("legacy");
   reconcileDeadTurn(f.runtime, f.dir, legacy.id, dead);
@@ -187,4 +188,45 @@ test("dead runner recovers only matching-attempt public journal before completio
   reconcileDeadTurn(f.runtime, f.dir, f.job.id, dead);
   assert.deepEqual(f.runtime.getProgress(f.job.id).map(p=>p.text), ["Checking files"]);
   assert.equal(f.runtime.job(f.job.id).status,"completed");
+});
+
+
+test("chat and every background turn use validated independent hour budgets", () => {
+  const defaults = turnTimeouts({});
+  assert.deepEqual(defaults, { chatMs: 3600000, backgroundMs: 3600000 });
+  for (const kind of ["chat", "task", "worker_result", "review", "notification", "future-background-kind"]) {
+    assert.deepEqual(turnDeadlines(kind, defaults), { runtimeSeconds: 3600, stopSeconds: 5, watchdogMs: 3610000 });
+  }
+  const custom = turnTimeouts({ CODEPAT_CHAT_TIMEOUT_MS: "120000", CODEPAT_BACKGROUND_TIMEOUT_MS: "900000" });
+  assert.equal(turnDeadlines("chat", custom).runtimeSeconds, 120);
+  assert.equal(turnDeadlines("review", custom).runtimeSeconds, 900);
+  assert.equal(turnDeadlines("worker_result", custom).watchdogMs, 910000);
+  assert.equal(turnTimeouts({CODEPAT_CHAT_TIMEOUT_MS: "600000"}).backgroundMs, 3600000);
+  for (const key of ["CODEPAT_CHAT_TIMEOUT_MS", "CODEPAT_BACKGROUND_TIMEOUT_MS"])
+    for (const value of ["", "0", "59999", "60001", "3600001", "Infinity", "oops"])
+      assert.throws(() => turnTimeouts({[key]: value}), new RegExp(key));
+  assert.equal(failureKind("timeout", 1, false, false, true), "turn_timeout");
+  assert.equal(failureKind("success", 0, true, false, true), "turn_timeout");
+});
+
+
+test("terminal provider diagnosis survives runner death without replaying the turn", t => {
+  const f = fixture(t);
+  const stem = `${f.job.id}.0`;
+  saveReceipt(join(f.dir, `${stem}.turn.json`), {jobId:f.job.id,attempt:0,launched:true,failure:"provider_policy"});
+  assert.equal(reconcileDeadTurn(f.runtime,f.dir,f.job.id,dead),true);
+  assert.equal(f.runtime.job(f.job.id).status,"failed");
+  assert.equal(f.runtime.job(f.job.id).error,"provider_policy");
+  assert.equal(f.runtime.nextJob("replacement",1)?.job.kind,"incident");
+  assert.equal(f.state.all("workers").length,0);
+  assert.equal(f.state.all("deliveries").length,0);
+});
+
+test("unrecognized persisted diagnostic cannot become user text or authorize retry", t => {
+  const f = fixture(t);
+  saveReceipt(join(f.dir, `${f.job.id}.0.turn.json`), {jobId:f.job.id,attempt:0,launched:true,failure:"private-injected-body"});
+  reconcileDeadTurn(f.runtime,f.dir,f.job.id,dead);
+  assert.equal(f.runtime.job(f.job.id).error,"recovery_required");
+  assert.doesNotMatch(JSON.stringify(f.runtime.job(f.job.id)),/private-injected-body/);
+  assert.equal(f.runtime.nextJob("replacement",1)?.job.kind,"incident");
 });

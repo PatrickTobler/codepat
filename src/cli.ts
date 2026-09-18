@@ -7,6 +7,9 @@ import { control } from "./client.ts";
 const [action, ...args] = process.argv.slice(2);
 if (action === "--help" || action === "help" || !action) {
   console.log(`CodePat (Node 24)
+worker-hold <worker>
+record-worker-hold|reconcile-worker-hold <worker> --file <private-evidence.json>
+incident-report <incident-id> --kind failure|blocked|recovered --file <explanation>
 review-status | review-work <worker> --state pending|waiting|done --file <note>
 recover-chat <response-id> --reconciled --file <reconciliation>
 status | repositories | instances | workers | projects | project <uuid>
@@ -41,6 +44,14 @@ const jobId = process.env.CODEPAT_JOB_ID;
 let body: Record<string, unknown> = { jobId };
 let route = action;
 switch (action) {
+  case "worker-hold":
+    body={jobId,workerId:args[0]};break;
+  case "record-worker-hold":
+  case "reconcile-worker-hold":
+    body={jobId,workerId:args[0],evidence:JSON.parse(readFileSync(option("--file"),"utf8"))};break;
+  case "incident-report":
+    body = { jobId, incidentId: args[0], kind: option("--kind"), text: readFileSync(option("--file"), "utf8") };
+    break;
   case "contacts":
     body = { jobId, query: args[0] };
     break;
