@@ -238,7 +238,11 @@ test("same-generation worker blocked episodes recur only after observed health a
   observed="idle";await f.runtime.monitor();f.runtime.captureIncidents();
   assert.equal(f.state.get<Worker>("workers",f.worker.id)!.recoveryHold,true);
   assert.equal(f.state.get<Incident>("incidents",first.id)!.episodeEndedAt,undefined);
-  observed="working";await f.runtime.monitor(); // existing monitor semantics: real working state clears hold
+  observed="working";await f.runtime.monitor();
+  assert.equal(f.state.get<Worker>("workers",f.worker.id)!.recoveryHold,true);
+  // Model an explicit audited resolution; API decision validation has dedicated tests.
+  f.state.put("workers",f.worker.id,{...f.state.get<Worker>("workers",f.worker.id)!,recoveryHold:false});
+  await f.runtime.monitor();
   assert.ok(f.state.get<Incident>("incidents",first.id)!.episodeEndedAt);
   observed="blocked";await f.runtime.monitor();await f.runtime.monitor();
   assert.equal(f.state.all("incidents").length,2);
@@ -324,7 +328,9 @@ test("task report lost acknowledgments, concurrent retries and restart reuse one
   try{
     const runtime=new Runtime(reopened,f.runtime.herdr,f.runtime.config);
     runtime.assertAssigned=async()=>{throw new Error("retry must reuse receipt before remote access");};
-    assert.deepEqual(await runtime.control("task-report",request),results[0]);
+    const retry=await runtime.control("task-report",request) as {notificationId:string;status:string;ok:boolean};
+    assert.equal(retry.notificationId,(results[0] as {notificationId:string}).notificationId);
+    assert.equal(retry.status,"uncertain");assert.equal(retry.ok,false);
     assert.equal(reopened.all<Outbox>("outbox")[0].status,"uncertain");
     assert.equal(reopened.all("outbox").length,1);
   }finally{reopened.close();}

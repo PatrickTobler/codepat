@@ -77,4 +77,39 @@ Queued instructions retain their IDs and text across recovery/restart. Held disp
 
 Automatic recovery reuses an existing queued instruction instead of superseding it. A recovery preamble requires reconciliation before continuing. Pane/session preparation alone no longer emits a recovered notice or a RUNNING task event. The recovery notice is emitted only after Herdr acknowledges the prompt; lost acknowledgment produces no success notice. A hold arriving while a tab is being created retains the new pane reference without starting its agent; a hold arriving during an already-issued start prevents subsequent instructions and retains the hold. These guards cannot revoke an external call already issued before a new hold was observed.
 
-Synthetic reproductions: `node --test src/worker-guard.test.ts src/reliability.test.ts src/recovery.test.ts`. They cover held idle/completed lifecycle gates, restart, uncertain sibling instructions, holds arriving during task/pane/prepare/start operations, ordinary steering and recovery acknowledgment loss. No real worker is resumed by these tests. Historical holds without approval provenance and unresolved instruction effects still require a separately reviewed owner-scoped reconciliation capability; this guard deliberately does not implement one.
+Synthetic reproductions: `node --test src/worker-guard.test.ts src/reliability.test.ts src/recovery.test.ts`. They cover held idle/completed lifecycle gates, restart, uncertain sibling instructions, holds arriving during task/pane/prepare/start operations, ordinary steering and recovery acknowledgment loss. No real worker is resumed by these tests. Historical boolean-only holds without approval provenance and unresolved effects remain blocked. The narrow audited workflow below applies only to new holds with known action evidence.
+
+
+### Audited owner-chat hold reconciliation
+
+This workflow is source support, not deployment or permission to resolve any particular action. It runs only in an active chat for the exact owning conversation and organization. Worker reporting credentials and autonomous worker/review/incident jobs cannot invoke it. No approval keys, task transitions, prompts or session launches are sent by reconciliation.
+
+1. While the actual dialog is still blocked, inspect it under the owner's authorization. `worker-hold <worker>` returns the durable hold identity. `record-worker-hold <worker> --file /private/hold-action.json` binds inspected action evidence to that hold, generation and pane. The action is a SHA-256 digest of the exact inspected request; store the redacted inspection record privately and use its reference, never credentials or raw secrets. The runtime verifies the same live pane is blocked before and after ownership checks. Legacy boolean holds have no identity/provenance and are refused; a dialog already gone cannot be backfilled by guessing.
+2. Record the actual human decision, not an inference from agent status. Once the same dialog is closed and its verified session is idle/done, use `reconcile-worker-hold <worker> --file /private/hold-decision.json`. The runtime rechecks live task owner, organization and coworker assignment, identity/generation/pane/hold/action, current job scope, and live dialog state after awaits. Sending/uncertain worker instructions or conversation deliveries prevent reconciliation.
+3. Approval clears only the matched bookkeeping hold; it neither presses an approval button nor reissues the command. Existing authorized queued instructions may then dispatch. Denial/cancellation requires the exact complete list of queued instruction IDs in `retireDeliveryIds`; they are retired atomically and the worker is left stopped. Further work requires a separately authorized instruction through the existing resume workflow, preserving the denied decision. Unknown provenance/outcomes stay held. Every decision and receipt is durable; conflicting repeated decisions are rejected.
+
+Action evidence file (synthetic values; take real binding fields from the scoped hold read):
+
+```json
+{
+  "holdId": "observed-hold-id",
+  "generation": 1,
+  "paneId": "observed-pane-id",
+  "actionDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "evidenceReference": "private-inspected-dialog-record"
+}
+```
+
+Decision file repeats `holdId`, `generation`, `paneId`, `actionDigest`, and adds `decision` (`approved`, `denied` or `cancelled`) and `decisionReference`. For denial/cancellation also supply `retireDeliveryIds` containing every currently queued instruction ID, including an empty array when none exist. No decision changes an uncertain delivery.
+
+These are authenticated owner-context **attestations**, not cryptographic verification of a human pressing a button. CodePat cannot independently establish the truth of a private evidence reference. The trusted orchestrator must inspect the exact action and preserve the human decision; it must not fabricate attestation or use generic revival authorization for an unknown approval. Where proof is unavailable, leave the hold blocked. No automatic monitor observation (including working) clears a hold.
+
+### Review hardening and rollback limits
+
+Dispatch generation/result changes and `sending` are committed in one SQLite transaction before the prompt. A crash rolls both back or leaves a sending receipt, which restart conservatively makes uncertain. A scoped reporting config may have been created on disk before a transaction rollback; its uncommitted scope grants no authority.
+
+A follow-up may already have reopened a COMPLETED task before a new hold arrives; blocked responses expose `priorAcceptedTaskTransition` when known. No-instruction-dispatched does not mean no task transition occurred. An ambiguous transition response remains unconfirmed. Preparing automatic recovery of a READY task does not move its status to RUNNING; task lifecycle reporting remains a separate orchestrator step.
+
+If worker identity changes during tab creation, the returned pane reference is retained in private `orphanWorkerPanes` metadata for inspection. It is not started, adopted or closed automatically. If the tab-create response itself is lost, its identity may be unknown; inspect Herdr before any replacement attempt. The bridge cannot revoke an external call already issued before a hold appeared.
+
+Before downgrade, drain or safely retire new `incident` jobs and preserve all workerHolds, receipts, decisions and unresolved operations. An older runtime lacks these guards and can deliver queued held instructions: do NOT downgrade into runnable held queues or unresolved reconciliation state. Keep the service safely paused pending a compatible repair when those conditions cannot be met; never clear holds or restore stale SQLite to make rollback appear safe.

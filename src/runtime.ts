@@ -1,3 +1,4 @@
+import {WorkerHolds} from "./worker-holds.ts";
 import { apiRejection } from "./api-diagnostic.ts";
 import { Incidents, noticeText, safeCause, causeText, type Incident, type NoticeKind } from "./incidents.ts";
 import { MAX_PROGRESS, validateProgress, type Progress } from "./progress.ts";
@@ -136,6 +137,9 @@ export class Runtime implements ChatService {
       (scope.generation ?? 0) === (this.getResponse(scope.id)?.generation ?? 0) &&
       [
         "workers",
+        "worker-hold",
+        "record-worker-hold",
+        "reconcile-worker-hold",
         "instances",
         "repositories",
         "progress",
@@ -396,6 +400,7 @@ export class Runtime implements ChatService {
         worker.paneId=createdPane;
         this.state.put("workers",worker.id,{...current,paneId:createdPane});
       }
+      else this.state.put("orphanWorkerPanes",createdPane,{workerId:worker.id,conversationId:worker.conversationId,paneId:createdPane,generation:worker.generation,createdAt:Date.now(),reason:"Worker identity changed during pane creation; inspect before cleanup"});
       this.guardWorkerRecovery(worker);
     }
     await this.herdr.call([
@@ -640,6 +645,7 @@ export class Runtime implements ChatService {
           comment: `Continuing existing worker with user instructions:\n${instruction}`,
         },
       );
+      this.state.put("workerFollowupTransitions",worker.id,{taskId:worker.taskId,status:"RUNNING",acceptedAt:Date.now()});
     } else await this.assertAssigned(worker.taskId);
     this.guardWorkerRecovery(worker);
     this.state.put<ReviewWork>("reviewWork", worker.id, { workerId: worker.id, state: "pending", note: instruction.slice(0, 2000) });
@@ -700,8 +706,13 @@ export class Runtime implements ChatService {
               : (live?.agent_status ?? "missing");
         const previous = worker.state;
         worker.state = state;
-        if (state === "blocked" || (previous === "blocked" && state !== "working")) worker.recoveryHold = true;
-        else if (state === "working") worker.recoveryHold = false;
+        if (state === "blocked" || (previous === "blocked" && state !== "working")) {
+          const c=this.state.get<Conversation>("conversations",worker.conversationId);
+          if(c)new WorkerHolds(this.state).observe(worker,c);
+          worker.recoveryHold=true;
+        }
+        // A working/idle observation is not an audited human decision.
+
         if (replaced)
           worker.error =
             "Worker pane belongs to another agent; retained for inspection";
@@ -900,21 +911,23 @@ export class Runtime implements ChatService {
           continue;
         }
         if(this.state.get<Delivery>("deliveries",item.id)?.status!=="queued")continue;
-        const current = this.state.get<Worker>("workers", worker.id)!;
-        current.generation = (current.generation ?? 0) + 1;
-        current.result = undefined;
-        current.state = "working";
-        this.state.put("workers", current.id, current);
-        const reportConfig = this.scopedConfig({kind:"worker",id:worker.id,generation:current.generation});
-        item.blockedReason=undefined;
-        item.status="sending";
-        this.state.put("deliveries",item.id,item);
+        const reportConfig=this.state.transaction(()=>{
+          const current=this.state.get<Worker>("workers",worker.id)!;
+          current.generation=(current.generation??0)+1;
+          current.result=undefined;current.state="working";
+          this.state.put("workers",current.id,current);
+          const config=this.scopedConfig({kind:"worker",id:worker.id,generation:current.generation});
+          item.blockedReason=undefined;item.status="sending";
+          this.state.put("deliveries",item.id,item);
+          return config;
+        });
         attempted=true;
         await this.herdr.prompt(worker.paneId,
           `${item.recoveryNotice ? "Resume the existing task/session. Reconcile prior actions and existing PRs before continuing; never repeat an uncertain external effect or approve a pending human decision.\n\n" : ""}${item.text}\n\nReport the result for this instruction with CODEPAT_CONFIG=${JSON.stringify(reportConfig)} node ${JSON.stringify(this.config.cliPath)} worker-result ${worker.id} --file /absolute/path/to/result.md. This replaces any earlier reporting credential.`);
         item.status = "sent";
       } catch (error) {
         if(!attempted){
+          item.status="queued";
           item.blockedReason=error instanceof WorkerRecoveryBlocked ? error.detail.reason : "Instruction preflight failed; no prompt sent";
         }else{
           item.status = "uncertain";
@@ -1018,6 +1031,7 @@ export class Runtime implements ChatService {
             attempts: item.attempts,
             httpStatus: item.httpStatus,
             rejectionKind: item.rejectionKind,
+            reconciliationHttpStatus: item.reconciliationHttpStatus,
           })),
       },
     };
@@ -1052,6 +1066,7 @@ export class Runtime implements ChatService {
     for(const c of this.state.all<Conversation>("conversations"))this.incidents.healthy(c,channel);
   }
   captureIncidents(): void {
+    this.incidents.reconcileDeliveries();
     const conversations=this.state.all<Conversation>("conversations");
     for(const c of conversations){
       const workers=this.state.all<Worker>("workers").filter(w=>w.conversationId===c.id);
@@ -1060,7 +1075,7 @@ export class Runtime implements ChatService {
         const w=workers.find(w=>w.id===d.workerId)!;
         this.incidents.record(c,{source:"delivery",sourceId:"instruction:"+d.id,kind:"blocked",cause:"delivery_uncertain",workerId:w.id,taskId:w.taskId});
       }
-      for(const o of this.state.all<Outbox>("outbox").filter(o=>o.conversationId===c.id && (["failed","uncertain"].includes(o.status) || (o.status==="pending" && Boolean(o.lastError))))){
+      for(const o of this.state.all<Outbox>("outbox").filter(o=>o.conversationId===c.id && ["failed","uncertain"].includes(o.status))){
         // A notification cannot create another notification failure job recursively.
         if(o.incidentIds?.length)continue;
         const task=/^\/tasks\/([^/]+)\/events$/.exec(o.path)?.[1];
@@ -1440,7 +1455,20 @@ export class Runtime implements ChatService {
     // for operator reconciliation; blindly replaying it could duplicate a message.
     return false;
   }
+  taskReportResult(notificationId:string) {
+    const delivery=this.state.get<Outbox>("outbox",notificationId);
+    return {ok:Boolean(delivery && ["pending","sending","sent"].includes(delivery.status)),notificationId,
+      status:delivery?.status??"unknown",httpStatus:delivery?.httpStatus,rejectionKind:delivery?.rejectionKind,
+      reconciliationHttpStatus:delivery?.reconciliationHttpStatus,blockedReason:delivery?.blockedReason,
+      accepted:delivery?.status==="sent"};
+  }
+  private flushingOutbox=false;
   async flushOutbox(): Promise<void> {
+    if(this.flushingOutbox)return;
+    this.flushingOutbox=true;
+    try{await this.flushOutboxSerial();}finally{this.flushingOutbox=false;}
+  }
+  private async flushOutboxSerial(): Promise<void> {
     if (!this.config.apiKey) return;
     for (const snapshot of this.state.all<Outbox>("outbox")) {
       const item = this.state.get<Outbox>("outbox", snapshot.id)!;
@@ -1459,6 +1487,7 @@ export class Runtime implements ChatService {
         this.state.put("outbox", item.id, item);
         continue;
       }
+      let attemptedPost=false;
       try {
         const conversation = item.conversationId
           ? this.state.get<Conversation>("conversations", item.conversationId)
@@ -1509,17 +1538,42 @@ export class Runtime implements ChatService {
           this.state.put("outbox", item.id, item);
           continue;
         }
+        if(item.requestedTaskStatus && taskId){
+          const prior=this.state.all<Outbox>("outbox").slice(0,this.state.all<Outbox>("outbox").findIndex(o=>o.id===item.id));
+          if(prior.some(o=>o.path===item.path && ["pending","sending","uncertain"].includes(o.status))){
+            item.blockedReason="Prior task report has an unresolved delivery outcome";
+            this.state.put("outbox",item.id,item);continue;
+          }
+          // Preflight a distinct, not-yet-accepted report. Never retry uncertain POSTs.
+          const remote=record((await this.api(`/tasks/${taskId}`,"GET",undefined,headers)).data);
+          if(remote.assigneeId!==this.config.coworkerId)throw new Error("Task assignment changed before reporting");
+          if(remote.status===item.requestedTaskStatus)delete item.body.status;
+          else item.body.status=item.requestedTaskStatus;
+          if(this.state.get<Outbox>("outbox",item.id)?.status!=="pending")continue;
+          if(item.body.status==="COMPLETED" && this.taskHasUnfinishedWork(decodeURIComponent(taskId))){
+            item.status="superseded";this.state.put("outbox",item.id,item);continue;
+          }
+          item.blockedReason=undefined;
+        }
         item.status = "sending";
         item.attempts = (item.attempts ?? 0) + 1;
         this.state.put("outbox", item.id, item);
+        attemptedPost=true;
         await this.api(item.path, "POST", item.body, headers);
         if (taskId && typeof item.body.status === "string") this.state.put("reviewTaskStatus", decodeURIComponent(taskId), item.body.status);
         item.status = "sent";
         item.lastError = undefined;
+        item.httpStatus=undefined;item.rejectionKind=undefined;
+        item.reconciliationHttpStatus=undefined;item.blockedReason=undefined;
         item.retryAt = undefined;
       } catch (error) {
-        item.httpStatus=error instanceof ApiError ? error.status : undefined;
-        item.rejectionKind=error instanceof ApiError ? error.rejectionKind : undefined;
+        if(attemptedPost){
+          item.httpStatus=error instanceof ApiError ? error.status : undefined;
+          item.rejectionKind=error instanceof ApiError ? error.rejectionKind : undefined;
+        }else{
+          item.reconciliationHttpStatus=error instanceof ApiError ? error.status : undefined;
+          item.blockedReason="Delivery preflight or reconciliation failed; no new POST attempted";
+        }
         if (item.status === "sending")
           item.status =
             error instanceof ApiError && error.status === 429
@@ -1724,7 +1778,7 @@ export class Runtime implements ChatService {
       const status = typeof body.status === "string" ? body.status : undefined;
       const receipt = createHash("sha256").update(JSON.stringify([job.id,job.conversationId,job.taskId,status??null,content])).digest("hex");
       const previous = this.state.get<{notificationId:string}>("taskReportReceipts",receipt);
-      if(previous) return {ok:true,...previous};
+      if(previous) return this.taskReportResult(previous.notificationId);
       const task = await this.assertAssigned(job.taskId);
       if (
         status &&
@@ -1747,15 +1801,19 @@ export class Runtime implements ChatService {
         // Recheck after the asynchronous ownership read: concurrent lost-ack retries
         // must reserve the same delivery, including when the first outcome is uncertain.
         const previous=this.state.get<{notificationId:string}>("taskReportReceipts",receipt);
-        if(previous)return {ok:true,...previous};
+        if(previous)return this.taskReportResult(previous.notificationId);
         const notificationId=this.reportTask(
           job.taskId!,
           label ? noticeText(label,content,[{taskId:job.taskId}]) : content,
           status === task.status ? undefined : status,
         );
+        if(status){
+          const delivery=this.state.get<Outbox>("outbox",notificationId)!;
+          delivery.requestedTaskStatus=status;this.state.put("outbox",notificationId,delivery);
+        }
         this.state.put("taskReportReceipts",receipt,{notificationId});
         this.state.put("jobTaskReport",job.id,content);
-        return {ok:true,notificationId};
+        return this.taskReportResult(notificationId);
       });
     }
     const worker = this.state.get<Worker>(
@@ -1764,6 +1822,35 @@ export class Runtime implements ChatService {
     );
     if (!worker || !this.ownsWorker(job, worker))
       throw new Error("Worker not owned by this user");
+    if (["worker-hold","record-worker-hold","reconcile-worker-hold"].includes(action)) {
+      if(job.kind!=="chat")throw new Error("Hold reconciliation requires an active owner chat, not autonomous work");
+      if(worker.conversationId!==job.conversationId)throw new Error("Hold requires the exact owning conversation");
+      const c=this.state.get<Conversation>("conversations",job.conversationId)!;
+      if(!c.owner || !c.metadata.sokosumi_organization_id)throw new Error("Verified owner and organization required");
+      const holds=new WorkerHolds(this.state);
+      const savedHold=worker.holdId?this.state.get<import("./worker-holds.ts").WorkerHold>("workerHolds",worker.holdId):undefined;
+      if(savedHold && (savedHold.owner!==c.owner || savedHold.organization!==(c.metadata.sokosumi_organization_id??"")))throw new Error("Hold scope changed");
+      if(action==="worker-hold")return {workerId:worker.id,generation:worker.generation??0,paneId:worker.paneId,approvalHold:Boolean(worker.recoveryHold),hold:savedHold,unknownProvenance:!savedHold?.actionDigest};
+      if(this.workerOperations.has(worker.id))throw new Error("Worker operation in progress");
+      this.workerOperations.add(worker.id);
+      try{
+        const input=record(body.evidence);
+        holds.bound(worker,c,input);
+        const live=await this.workerAgent(worker);
+        if(!live || (action==="record-worker-hold" ? live.agent_status!=="blocked" : !["idle","done"].includes(live.agent_status)))throw new Error("Verify the exact blocked dialog or its closed idle/done session first");
+        if(worker.taskId){
+          const task=record((await this.api(`/tasks/${encodeURIComponent(worker.taskId)}`,"GET",undefined,this.contextHeaders(c))).data);
+          if(task.assigneeId!==this.config.coworkerId || (task.ownerId??task.userId)!==c.owner || task.organizationId!==c.metadata.sokosumi_organization_id)throw new Error("Task owner/organization/assignment cannot be verified");
+        }
+        const finalLive=await this.workerAgent(worker);
+        if(!finalLive || (action==="record-worker-hold" ? finalLive.agent_status!=="blocked" : !["idle","done"].includes(finalLive.agent_status)))throw new Error("Worker dialog changed during verification");
+        const current=this.state.get<Worker>("workers",worker.id)!;
+        const currentC=this.state.get<Conversation>("conversations",c.id)!;
+        holds.bound(current,currentC,input);
+        if(this.job(job.id).status!=="in_progress")throw new Error("Owner chat ended before reconciliation");
+        return action==="record-worker-hold" ? holds.recordAction(current,currentC,input,job.id) : holds.resolve(current,currentC,input,job.id);
+      }finally{this.workerOperations.delete(worker.id);}
+    }
     if (this.workerOperations.has(worker.id))
       throw new Error("Worker operation in progress; retry shortly");
     const mutatingWorker = ["send", "resume", "stop"].includes(action);
@@ -1877,7 +1964,7 @@ export class Runtime implements ChatService {
       }
       throw new Error("Unknown action");
     } catch(error) {
-      if(error instanceof WorkerRecoveryBlocked)return error.detail;
+      if(error instanceof WorkerRecoveryBlocked)return {...error.detail,priorAcceptedTaskTransition:this.state.get("workerFollowupTransitions",worker.id)};
       throw error;
     } finally {
       if (mutatingWorker) this.workerOperations.delete(worker.id);

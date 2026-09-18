@@ -11,6 +11,7 @@ export interface Incident {
   kind: NoticeKind; cause: string; taskId?: string; workerId?: string;
   createdAt: number; attempts: number; reviewedAt?: number; fallback?: boolean;
   episodeEndedAt?: number;
+  resolvedAt?: number;
   notificationMissing?: boolean;
   reviewFailure?: string; notificationIds?: string[];
 }
@@ -75,10 +76,24 @@ export class Incidents {
     });
   }
   list(c: Conversation): Incident[] { return this.state.all<Incident>("incidents").filter(i=>this.owns(i,c)); }
-  pending(c: Conversation): Incident[] { return this.list(c).filter(i=>!i.reviewedAt); }
+  reconcileDeliveries():void {
+    for(const i of this.state.all<Incident>("incidents")){
+      if(i.source!=="delivery" || !i.sourceId.startsWith("outbox:") || i.resolvedAt)continue;
+      const d=this.state.get<Outbox>("outbox",i.sourceId.slice(7));
+      const c=this.state.get<Conversation>("conversations",i.conversationId);
+      if(c && this.owns(i,c) && d?.conversationId===i.conversationId && d.status==="sent"){
+        i.resolvedAt=Date.now();this.state.put("incidents",i.id,i);
+      }
+    }
+    for(const d of this.state.all<Outbox>("outbox")){
+      if(d.status!=="pending" || (d.attempts??0)!==0 || !d.incidentIds?.length)continue;
+      if(d.incidentIds.every(id=>Boolean(this.state.get<Incident>("incidents",id)?.resolvedAt))){d.status="superseded";this.state.put("outbox",d.id,d);}
+    }
+  }
+  pending(c: Conversation): Incident[] { this.reconcileDeliveries();return this.list(c).filter(i=>!i.reviewedAt && !i.resolvedAt); }
   view(i: Incident) {
     const w=i.workerId ? this.state.get<Worker>("workers",i.workerId) : undefined;
-    return {...i, explanation:causeText(i.cause),taskUrl:i.taskId ? `https://app.sokosumi.com/tasks/${encodeURIComponent(i.taskId)}`:undefined,
+    return {...i, explanation:i.resolvedAt ? "The source update is now confirmed accepted; any uncertain notification still requires reconciliation." : causeText(i.cause),taskUrl:i.taskId ? `https://app.sokosumi.com/tasks/${encodeURIComponent(i.taskId)}`:undefined,
       worker:w && w.conversationId===i.conversationId ? {id:w.id,state:w.state,observedAt:w.observedAt,recoveryHold:Boolean(w.recoveryHold),resultAvailable:Boolean(w.result)} : undefined,
       notifications:(i.notificationIds??[]).map(id=>{
         const delivery=this.state.get<Outbox>("outbox",id);
@@ -86,7 +101,8 @@ export class Incidents {
       })};
   }
   context(c: Conversation, advance=false) {
-    const all=this.list(c);
+    this.reconcileDeliveries();
+    const all=this.list(c).filter(i=>!i.resolvedAt || (i.notificationIds??[]).some(id=>["pending","sending","uncertain","failed"].includes(this.state.get<Outbox>("outbox",id)?.status??"")));
     const selected=all.filter(i=>!i.reviewedAt || i.notificationMissing || (i.notificationIds??[]).some(id=>["pending","sending","uncertain","failed"].includes(this.state.get<Outbox>("outbox",id)?.status??"")));
     const offset=selected.length ? (this.state.get<number>("incidentContextOffset",c.id)??0)%selected.length : 0;
     if(advance && selected.length)this.state.put("incidentContextOffset",c.id,(offset+20)%selected.length);
@@ -112,13 +128,14 @@ export class Incidents {
     });
   }
   selected(job:Job): Incident[] {
+    this.reconcileDeliveries();
     const c=this.state.get<Conversation>("conversations",job.conversationId);
     if(!c || (job.kind==="incident" && (job.reviewOwner!==c.owner || job.reviewOrganization!==c.metadata.sokosumi_organization_id)))return [];
-    return (job.incidentIds??[]).flatMap(id=>{const i=this.state.get<Incident>("incidents",id);return i && this.owns(i,c) && !i.reviewedAt ? [i]:[];});
+    return (job.incidentIds??[]).flatMap(id=>{const i=this.state.get<Incident>("incidents",id);return i && this.owns(i,c) && !i.reviewedAt && !i.resolvedAt ? [i]:[];});
   }
 }
 export function noticeText(kind:NoticeKind,text:string,items:Pick<Incident,"taskId">[],automated=false):string {
   const label=automated ? "Automated system notice — orchestrator unavailable" : `CodePat — ${kind==="recovered"?"Recovery update":kind==="blocked"?"Work blocked":"Failure update"}`;
   const links=[...new Set(items.flatMap(i=>i.taskId?[i.taskId]:[]))].map(id=>`[Task](https://app.sokosumi.com/tasks/${encodeURIComponent(id)})`).join(" · ");
-  return `**${label}**\n\n${text.slice(0,4000)}${links?"\n\n"+links:""}`;
+  return `**${label}**\n\n${text}${links?"\n\n"+links:""}`;
 }

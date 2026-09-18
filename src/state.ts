@@ -43,6 +43,7 @@ export interface Worker {
   setupInstructions?: string;
   recoveryAttempts?: number;
   recoveryHold?: boolean;
+  holdId?: string;
   nextRecoveryAt?: number;
   taskId?: string;
   taskUrl?: string;
@@ -70,6 +71,9 @@ export interface Delivery {
   createdAt: number;
 }
 export interface Outbox {
+  requestedTaskStatus?: string;
+  reconciliationHttpStatus?: number;
+  blockedReason?: string;
   httpStatus?: number;
   rejectionKind?: string;
   incidentIds?: string[];
