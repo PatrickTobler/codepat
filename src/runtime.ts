@@ -55,6 +55,12 @@ class ApiError extends Error {
     this.rejectionKind = rejectionKind;
   }
 }
+class WorkerRecoveryBlocked extends Error {
+  detail: {status:string;workerId:string;approvalHold:boolean;uncertainDeliveryIds:string[];reason:string};
+  constructor(workerId:string,approvalHold:boolean,uncertainDeliveryIds:string[],reason:string){
+    super(reason);this.detail={status:"recovery_blocked",workerId,approvalHold,uncertainDeliveryIds,reason};
+  }
+}
 export class Runtime implements ChatService {
   state: State;
   herdr: HerdrPort;
@@ -367,6 +373,7 @@ export class Runtime implements ChatService {
     return worker;
   }
   async launchWorkerSession(worker: Worker, resume = false): Promise<void> {
+    this.guardWorkerRecovery(worker);
     const workspace = this.state.get<string>("meta", "workspace");
     if (!workspace) throw new Error("CodePat workspace is not ready");
     if (!worker.paneId) {
@@ -381,8 +388,15 @@ export class Runtime implements ChatService {
         worker.name,
         "--no-focus",
       ]);
-      worker.paneId = paneFrom(result);
-      this.state.put("workers", worker.id, worker);
+      const createdPane=paneFrom(result);
+      const current=this.state.get<Worker>("workers",worker.id)!;
+      // Retain the created resource even if a hold arrived during tab creation.
+      // No agent is launched until the fresh guard passes.
+      if(current.paneId===worker.paneId && current.generation===worker.generation){
+        worker.paneId=createdPane;
+        this.state.put("workers",worker.id,{...current,paneId:createdPane});
+      }
+      this.guardWorkerRecovery(worker);
     }
     await this.herdr.call([
       "agent",
@@ -391,7 +405,7 @@ export class Runtime implements ChatService {
       "--kind",
       worker.kind ?? "codex",
       "--pane",
-      worker.paneId,
+      worker.paneId!,
       "--",
       ...(worker.kind === "claude"
         ? [
@@ -410,6 +424,7 @@ export class Runtime implements ChatService {
             "never",
           ]),
     ]);
+    this.guardWorkerRecovery(worker);
     worker.archivedAt = undefined;
     worker.idleSince = undefined;
     this.state.put("workers", worker.id, worker);
@@ -455,6 +470,7 @@ export class Runtime implements ChatService {
       throw new Error("Herdr returned no pane list");
     if (result.panes.some((pane) => record(pane).pane_id === worker.paneId))
       return;
+    this.guardWorkerRecovery(worker);
     worker.paneId = undefined;
     worker.archivedAt = worker.archiveRequestedAt;
     worker.archiveRequestedAt = undefined;
@@ -502,21 +518,34 @@ export class Runtime implements ChatService {
       }
     }
   }
+  guardWorkerRecovery(worker: Worker): void {
+    const current=this.state.get<Worker>("workers",worker.id);
+    const uncertain=this.state.all<Delivery>("deliveries").filter(d=>d.workerId===worker.id && ["sending","uncertain"].includes(d.status)).map(d=>d.id);
+    const held=Boolean(current?.recoveryHold || current?.state==="blocked");
+    const changed=!current || current.conversationId!==worker.conversationId || current.generation!==worker.generation || current.paneId!==worker.paneId || current.taskId!==worker.taskId || current.worktree!==worker.worktree;
+    if(held || uncertain.length || changed)throw new WorkerRecoveryBlocked(worker.id,held,uncertain,
+      held ? "Human approval/recovery hold retained; no instruction dispatched." : uncertain.length ? "Prior instruction outcome is unresolved; no instruction dispatched." : "Worker identity or generation changed; inspect before continuing.");
+  }
   async wakeWorker(worker: Worker): Promise<void> {
+    this.guardWorkerRecovery(worker);
     await this.reconcileArchive(worker);
+    this.guardWorkerRecovery(worker);
     if (
       !worker.archivedAt &&
       worker.result &&
       !(await this.workerAgent(worker))
     ) {
+      this.guardWorkerRecovery(worker);
       // A completed process can disappear without passing through idle cleanup.
       // Retain its old shell and resume in a fresh owned pane.
       worker.paneId = undefined;
       worker.archivedAt = Date.now();
       this.state.put("workers", worker.id, worker);
     }
+    this.guardWorkerRecovery(worker);
     if (!worker.archivedAt) return;
     await this.launchWorkerSession(worker, true);
+    this.guardWorkerRecovery(worker);
     worker.state = "idle";
     this.state.put("workers", worker.id, worker);
   }
@@ -581,6 +610,7 @@ export class Runtime implements ChatService {
     this.state.put("workers", worker.id, worker);
   }
   async prepareFollowup(worker: Worker, instruction: string): Promise<void> {
+    this.guardWorkerRecovery(worker);
     if (!worker.taskId) return;
     const eventPath = `/tasks/${encodeURIComponent(worker.taskId)}/events`;
     for (const item of this.state.all<Outbox>("outbox")) {
@@ -597,6 +627,7 @@ export class Runtime implements ChatService {
     const task = record(
       (await this.api(`/tasks/${encodeURIComponent(worker.taskId)}`)).data,
     );
+    this.guardWorkerRecovery(worker);
     if (task.assigneeId !== this.config.coworkerId)
       throw new Error("Task is no longer assigned to CodePat");
     this.confirmWorkerProject(worker, task);
@@ -610,10 +641,12 @@ export class Runtime implements ChatService {
         },
       );
     } else await this.assertAssigned(worker.taskId);
+    this.guardWorkerRecovery(worker);
     this.state.put<ReviewWork>("reviewWork", worker.id, { workerId: worker.id, state: "pending", note: instruction.slice(0, 2000) });
     this.state.put("reviewTaskStatus", worker.taskId, "RUNNING");
   }
   queueInstruction(worker: Worker, text: string): Delivery {
+    this.guardWorkerRecovery(worker);
     const item: Delivery = {
       id: randomUUID(),
       workerId: worker.id,
@@ -722,11 +755,11 @@ export class Runtime implements ChatService {
       this.workerOperations.add(snapshot.id);
       const worker = this.state.get<Worker>("workers", snapshot.id)!;
       try {
-        const uncertain = this.state.all<Delivery>("deliveries").some(item => item.workerId === worker.id && ["sending", "uncertain"].includes(item.status));
-        if (uncertain || worker.recoveryHold) {
-          worker.state = "recovery_blocked";
-          this.state.put("workers", worker.id, worker);
-          this.workerNotice(worker, "Recovery retained an uncertain instruction or human approval boundary. Reconcile it before explicitly resuming; no instruction was replayed.");
+        try{this.guardWorkerRecovery(worker);}catch(error){
+          if(!(error instanceof WorkerRecoveryBlocked))throw error;
+          worker.state="recovery_blocked";
+          this.state.put("workers",worker.id,worker);
+          this.workerNotice(worker,error.detail.reason);
           continue;
         }
         if ((worker.recoveryAttempts ?? 0) >= 2 || !worker.taskId) {
@@ -742,6 +775,7 @@ export class Runtime implements ChatService {
         worker.nextRecoveryAt = now + worker.recoveryAttempts * 30_000;
         this.state.put("workers", worker.id, worker);
         const task = await this.assertAssigned(worker.taskId);
+        this.guardWorkerRecovery(worker);
         this.confirmWorkerProject(worker, task);
         if (!existsSync(worker.worktree)) {
           Object.assign(
@@ -753,6 +787,7 @@ export class Runtime implements ChatService {
               baseBranch: worker.baseBranch,
             }),
           );
+          this.guardWorkerRecovery(worker);
           this.state.put("workers", worker.id, worker);
         }
         const workspace = this.state.get<string>("meta", "workspace");
@@ -791,7 +826,12 @@ export class Runtime implements ChatService {
             throw new Error(
               "Existing pane is not an idle shell in the worker worktree; retained for inspection",
             );
-        } else if (!pane && !existingAgent) worker.paneId = undefined;
+        } else if (!pane && !existingAgent) {
+          this.guardWorkerRecovery(worker);
+          worker.paneId = undefined;
+          this.state.put("workers",worker.id,worker);
+        }
+        this.guardWorkerRecovery(worker);
         if (!existingAgent)
           await this.launchWorkerSession(worker, (worker.generation ?? 0) > 0);
         const previous = this.state
@@ -802,32 +842,22 @@ export class Runtime implements ChatService {
           )
           .slice(-3);
         this.state.transaction(() => {
-          for (const item of previous) {
-            if (["queued", "uncertain"].includes(item.status)) {
-              item.status = "superseded";
-              this.state.put("deliveries", item.id, item);
-            }
-          }
+          this.guardWorkerRecovery(worker);
           worker.state = "idle";
           worker.error = undefined;
           this.state.put("workers", worker.id, worker);
-          this.queueInstruction(
+          const pending=this.state.all<Delivery>("deliveries").find(d=>d.workerId===worker.id && d.status==="queued");
+          const recovery=pending ?? this.queueInstruction(
             worker,
             `Recover the interrupted task in the same worktree and saved session. Inspect current files and prior actions before continuing; never repeat an external side effect without checking whether it already happened. Inspect existing PRs for the retained branch and reuse them; a missing local receipt is not proof that a send, task, worker or PR was never created. Preserve pending human approvals. Original task: ${worker.prompt}\n${worker.setupInstructions ?? ""}\nRecent instructions (historical context; reconcile completed parts):\n${previous.map((item) => item.text).join("\n\n")}\nFinish by reporting a structured result with the reporting command appended below.`,
           );
+          recovery.recoveryNotice=true;
+          this.state.put("deliveries",recovery.id,recovery);
         });
-        if (task.status === "READY")
-          this.reportTask(
-            worker.taskId,
-            "Automated system status: existing worker session restored; task completion is not yet verified.",
-            "RUNNING",
-          );
-        this.workerNotice(
-          worker,
-          `Recovered the interrupted worker in ${worker.paneId}; continuing the same task and worktree (attempt ${worker.recoveryAttempts}/2).`,
-          "recovered",
-        );
+
       } catch (error) {
+        if(error instanceof WorkerRecoveryBlocked)continue;
+        try{this.guardWorkerRecovery(worker);}catch{continue;}
         worker.error = String(error);
         if (error instanceof ApiError && [403, 404].includes(error.status))
           worker.state = "stopped";
@@ -849,51 +879,57 @@ export class Runtime implements ChatService {
     }
   }
   async deliver(): Promise<void> {
-    for (const item of this.state.all<Delivery>("deliveries")) {
+    for (const snapshot of this.state.all<Delivery>("deliveries")) {
+      const item=this.state.get<Delivery>("deliveries",snapshot.id)!;
       if (item.status !== "queued") continue;
       const worker = this.state.get<Worker>("workers", item.workerId);
       if (!worker?.paneId || this.workerOperations.has(worker.id)) continue;
-      // Busy agents accept steering; blocked UIs require a human decision.
-      if (!["idle", "done", "working", "completed"].includes(worker.state))
-        continue;
-      item.status = "sending";
-      this.state.put("deliveries", item.id, item);
       this.workerOperations.add(worker.id);
+      let attempted=false;
       try {
+        this.guardWorkerRecovery(worker);
+        if (!["idle", "done", "working", "completed"].includes(worker.state)) {
+          item.blockedReason="Worker is not available for instruction delivery";continue;
+        }
         if (worker.taskId) await this.assertAssigned(worker.taskId);
+        this.guardWorkerRecovery(worker);
         const live = await this.workerAgent(worker);
-        if (!live)
-          throw new Error(
-            "Worker process is missing; recover before delivering instructions",
-          );
-        if (!["idle", "done", "working"].includes(live.agent_status)) {
-          item.status = "queued";
-          this.state.put("deliveries", item.id, item);
+        this.guardWorkerRecovery(worker);
+        if (!live || !["idle", "done", "working"].includes(live.agent_status)) {
+          item.blockedReason=live ? "Worker UI requires attention; no prompt sent" : "Worker process is missing; no prompt sent";
           continue;
         }
+        if(this.state.get<Delivery>("deliveries",item.id)?.status!=="queued")continue;
         const current = this.state.get<Worker>("workers", worker.id)!;
         current.generation = (current.generation ?? 0) + 1;
         current.result = undefined;
         current.state = "working";
         this.state.put("workers", current.id, current);
-        const reportConfig = this.scopedConfig({
-          kind: "worker",
-          id: worker.id,
-          generation: current.generation,
-        });
-        await this.herdr.prompt(
-          worker.paneId,
-          `${item.text}\n\nReport the result for this instruction with CODEPAT_CONFIG=${JSON.stringify(reportConfig)} node ${JSON.stringify(this.config.cliPath)} worker-result ${worker.id} --file /absolute/path/to/result.md. This replaces any earlier reporting credential.`,
-        );
+        const reportConfig = this.scopedConfig({kind:"worker",id:worker.id,generation:current.generation});
+        item.blockedReason=undefined;
+        item.status="sending";
+        this.state.put("deliveries",item.id,item);
+        attempted=true;
+        await this.herdr.prompt(worker.paneId,
+          `${item.recoveryNotice ? "Resume the existing task/session. Reconcile prior actions and existing PRs before continuing; never repeat an uncertain external effect or approve a pending human decision.\n\n" : ""}${item.text}\n\nReport the result for this instruction with CODEPAT_CONFIG=${JSON.stringify(reportConfig)} node ${JSON.stringify(this.config.cliPath)} worker-result ${worker.id} --file /absolute/path/to/result.md. This replaces any earlier reporting credential.`);
         item.status = "sent";
       } catch (error) {
-        item.status = "uncertain";
-        const c=this.state.get<Conversation>("conversations",worker.conversationId);
-        if(c)this.incidents.record(c,{source:"delivery",sourceId:"instruction:"+item.id,kind:"blocked",cause:"delivery_uncertain",workerId:worker.id,taskId:worker.taskId});
+        if(!attempted){
+          item.blockedReason=error instanceof WorkerRecoveryBlocked ? error.detail.reason : "Instruction preflight failed; no prompt sent";
+        }else{
+          item.status = "uncertain";
+          const c=this.state.get<Conversation>("conversations",worker.conversationId);
+          if(c)this.incidents.record(c,{source:"delivery",sourceId:"instruction:"+item.id,kind:"blocked",cause:"delivery_uncertain",workerId:worker.id,taskId:worker.taskId});
+        }
       } finally {
+        // Do not overwrite a concurrent explicit retirement/resolution.
+        if(["queued","sending"].includes(this.state.get<Delivery>("deliveries",item.id)?.status??""))this.state.put("deliveries", item.id, item);
         this.workerOperations.delete(worker.id);
       }
-      this.state.put("deliveries", item.id, item);
+      if(item.status==="sent" && item.recoveryNotice){
+        const current=this.state.get<Worker>("workers",worker.id)!;
+        this.workerNotice(current,"The restored worker accepted its recovery instruction; task completion remains unverified.","recovered");
+      }
     }
   }
   nextJob(runnerId?: string, protocol?: number): {
@@ -1745,7 +1781,9 @@ export class Runtime implements ChatService {
           if (task.status !== "RUNNING" && task.status !== "READY") throw new Error("Task needs external input or approval");
         }
       }
+      if (["send","resume"].includes(action))this.guardWorkerRecovery(worker);
       if (mutatingWorker) await this.reconcileArchive(worker);
+      if (["send","resume"].includes(action))this.guardWorkerRecovery(worker);
       if (action === "stop") {
         if (!worker.paneId) throw new Error("Worker has no pane");
         if (!(await this.workerAgent(worker)))
@@ -1758,9 +1796,7 @@ export class Runtime implements ChatService {
         return { ok: true };
       }
       if (action === "resume") {
-        const uncertain = this.state.all<Delivery>("deliveries").filter(d => d.workerId === worker.id && ["sending", "uncertain"].includes(d.status));
-        if (worker.recoveryHold || uncertain.length)
-          return { status: "recovery_blocked", workerId: worker.id, approvalHold: Boolean(worker.recoveryHold), uncertainDeliveryIds: uncertain.map(d => d.id), reason: "Reconcile prior instructions and any human approval before resuming. No instruction queued or session launched." };
+        this.guardWorkerRecovery(worker);
         if (
           !worker.result &&
           ["missing", "launch_failed", "recovery_blocked"].includes(
@@ -1769,6 +1805,7 @@ export class Runtime implements ChatService {
         ) {
           await this.workerAgent(worker); // Refuse to reset a pane owned by someone else.
           await this.prepareFollowup(worker, textField(body, "text"));
+          this.guardWorkerRecovery(worker);
           worker.state = "missing";
           worker.recoveryAttempts = 0;
           worker.nextRecoveryAt = undefined;
@@ -1800,11 +1837,13 @@ export class Runtime implements ChatService {
         if (!live || !["idle", "done"].includes(live.agent_status))
           throw new Error("Worker must be at its prompt before resuming");
         await this.prepareFollowup(worker, textField(body, "text"));
+        this.guardWorkerRecovery(worker);
         worker.state = "idle";
         this.state.put("workers", worker.id, worker);
         return this.queueInstruction(worker, textField(body, "text"));
       }
       if (action === "send") {
+        this.guardWorkerRecovery(worker);
         if (worker.state === "stopped")
           throw new Error(
             "Worker is stopped; explicitly resume it with new instructions",
@@ -1837,6 +1876,9 @@ export class Runtime implements ChatService {
         ]);
       }
       throw new Error("Unknown action");
+    } catch(error) {
+      if(error instanceof WorkerRecoveryBlocked)return error.detail;
+      throw error;
     } finally {
       if (mutatingWorker) this.workerOperations.delete(worker.id);
     }

@@ -61,6 +61,8 @@ export interface Worker {
   createdAt: number;
 }
 export interface Delivery {
+  blockedReason?: string;
+  recoveryNotice?: boolean;
   id: string;
   workerId: string;
   text: string;
