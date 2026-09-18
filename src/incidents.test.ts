@@ -135,14 +135,14 @@ test("HTTP failure response labels bootstrap fallback and later delivery is auth
 test("actual HTTP422 delivery rejection is retained and original write never retried",async t=>{
   const f=fixture(t);
   const {createServer}=await import("node:http");
-  let posts=0;const upstream=createServer((_req,res)=>{posts++;res.writeHead(422,{"content-type":"application/json"});res.end('{"error":"PRIVATE_REJECTION"}');});
+  let posts=0;const upstream=createServer((_req,res)=>{posts++;res.writeHead(422,{"content-type":"application/json"});res.end('{"message":"Invalid status transition: same status","error":"PRIVATE_REJECTION"}');});
   upstream.listen(0,"127.0.0.1");await once(upstream,"listening");
   t.after(()=>{upstream.closeAllConnections();upstream.close();});
   const a=upstream.address();assert.ok(a && typeof a==="object");f.runtime.config.apiUrl=`http://127.0.0.1:${a.port}`;
   f.runtime.reportTask("task","An orchestrator-authored update");
   await f.runtime.flushOutbox();await f.runtime.flushOutbox();assert.equal(posts,1);
   const original=f.state.all<Outbox>("outbox")[0];assert.equal(original.status,"failed");
-  const n=f.claim();assert.equal(n.job.kind,"incident");assert.match(JSON.stringify(n.context),/delivery_failed/);assert.match(JSON.stringify(n.context),/"httpStatus":422/);assert.doesNotMatch(JSON.stringify(n.context),/PRIVATE_REJECTION/);
+  const n=f.claim();assert.equal(n.job.kind,"incident");assert.match(JSON.stringify(n.context),/delivery_failed/);assert.match(JSON.stringify(n.context),/"httpStatus":422/);assert.match(JSON.stringify(n.context),/"rejectionKind":"same_status"/);assert.doesNotMatch(JSON.stringify(n.context),/PRIVATE_REJECTION/);
   f.runtime.completeJob(n.job.id,"The task update was rejected. Work remains tracked; the original update was not resent.");
   await f.runtime.flushOutbox();assert.equal(posts,2);
   f.runtime.captureIncidents();assert.equal(f.state.all("incidents").length,1);
@@ -309,4 +309,42 @@ test("a retained recovery block cannot flap episodes merely because its pane is 
   assert.equal(f.state.all("incidents").length,1);
   assert.equal(f.state.all<Incident>("incidents")[0].episodeEndedAt,undefined);
   assert.equal(f.state.get<Worker>("workers",f.worker.id)!.state,"recovery_blocked");
+});
+
+test("task report lost acknowledgments, concurrent retries and restart reuse one uncertain delivery",async t=>{
+  const f=fixture(t);
+  const job=f.state.enqueue({kind:"task",conversationId:f.c.id,taskId:"task",input:"Report progress"});f.claim();
+  f.runtime.assertAssigned=async()=>({status:"RUNNING"});
+  const request={jobId:job.id,text:"Needs review",status:"APPROVAL_REQUIRED"};
+  const results=await Promise.all([f.runtime.control("task-report",request),f.runtime.control("task-report",request)]);
+  assert.deepEqual(results[0],results[1]);assert.equal(f.state.all("outbox").length,1);
+  const delivery=f.state.all<Outbox>("outbox")[0];
+  f.state.put("outbox",delivery.id,{...delivery,status:"uncertain"});
+  const reopened=new State(join(f.dir,"state.sqlite"));
+  try{
+    const runtime=new Runtime(reopened,f.runtime.herdr,f.runtime.config);
+    runtime.assertAssigned=async()=>{throw new Error("retry must reuse receipt before remote access");};
+    assert.deepEqual(await runtime.control("task-report",request),results[0]);
+    assert.equal(reopened.all<Outbox>("outbox")[0].status,"uncertain");
+    assert.equal(reopened.all("outbox").length,1);
+  }finally{reopened.close();}
+  await f.runtime.control("task-report",{...request,text:"A distinct update"});
+  assert.equal(f.state.all("outbox").length,2);
+  const other=f.runtime.createConversation("other-owner",{sokosumi_organization_id:"other-org"});
+  const otherJob=f.state.enqueue({kind:"task",conversationId:other.id,taskId:"other-task",input:"Separate report"});
+  f.state.put("jobs",otherJob.id,{...otherJob,status:"in_progress"});
+  await f.runtime.control("task-report",{...request,jobId:otherJob.id});
+  assert.equal(f.state.all("outbox").length,3);
+});
+
+test("periodic scope change rejects incident-report before creating a notice or acknowledgment",async t=>{
+  const f=fixture(t);
+  const job=f.state.enqueue({kind:"review",conversationId:f.c.id,input:"Review",reviewOwner:f.c.owner,reviewOrganization:"org"});
+  f.state.put("jobs",job.id,{...job,status:"in_progress"});
+  const changed={...f.c,owner:"different-owner",metadata:{...f.c.metadata,sokosumi_organization_id:"different-org"}};
+  f.state.put("conversations",changed.id,changed);
+  const incident=f.runtime.incidents.record(changed,{source:"turn",sourceId:"new-owner-incident",kind:"failure",cause:"turn_exit_failure"});
+  await assert.rejects(f.runtime.control("incident-report",{jobId:job.id,incidentId:incident.id,kind:"failure",text:"Wrong scope"}),/Periodic scope changed/);
+  assert.equal(f.state.all("outbox").length,0);
+  assert.equal(f.state.get<Incident>("incidents",incident.id)!.reviewedAt,undefined);
 });

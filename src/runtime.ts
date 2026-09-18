@@ -1,3 +1,4 @@
+import { apiRejection } from "./api-diagnostic.ts";
 import { Incidents, noticeText, safeCause, causeText, type Incident, type NoticeKind } from "./incidents.ts";
 import { MAX_PROGRESS, validateProgress, type Progress } from "./progress.ts";
 import { Reviews, reviewInterval, type ReviewWork } from "./review.ts";
@@ -47,9 +48,11 @@ interface Scope {
 }
 class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  rejectionKind?: string;
+  constructor(status: number, message: string, rejectionKind?: string) {
     super(message);
     this.status = status;
+    this.rejectionKind = rejectionKind;
   }
 }
 export class Runtime implements ChatService {
@@ -977,6 +980,8 @@ export class Runtime implements ChatService {
             path: item.path,
             error: item.status === "uncertain" ? "delivery_uncertain" : "delivery_failed",
             attempts: item.attempts,
+            httpStatus: item.httpStatus,
+            rejectionKind: item.rejectionKind,
           })),
       },
     };
@@ -1023,7 +1028,7 @@ export class Runtime implements ChatService {
         // A notification cannot create another notification failure job recursively.
         if(o.incidentIds?.length)continue;
         const task=/^\/tasks\/([^/]+)\/events$/.exec(o.path)?.[1];
-        this.incidents.record(c,{source:"delivery",sourceId:"outbox:"+o.id,kind:"blocked",cause:o.status==="uncertain"?"delivery_uncertain":"delivery_failed",httpStatus:o.httpStatus,taskId:task?decodeURIComponent(task):undefined});
+        this.incidents.record(c,{source:"delivery",sourceId:"outbox:"+o.id,kind:"blocked",cause:o.status==="uncertain"?"delivery_uncertain":"delivery_failed",httpStatus:o.httpStatus,rejectionKind:o.rejectionKind,taskId:task?decodeURIComponent(task):undefined});
       }
       for(const d of this.state.all<DirectSend>("directSends").filter(d=>d.conversationId===c.id && d.userId===c.owner && d.organizationId===c.metadata.sokosumi_organization_id && ["uncertain","failed"].includes(d.status)))
         this.incidents.record(c,{source:"delivery",sourceId:"direct:"+d.id,kind:"blocked",cause:d.status==="uncertain"?"delivery_uncertain":"delivery_failed"});
@@ -1143,9 +1148,9 @@ export class Runtime implements ChatService {
     this.state.put("outbox", item.id, item);
     return id;
   }
-  reportTask(id: string, comment: string, status?: string, reviewNotification = false): void {
+  reportTask(id: string, comment: string, status?: string, reviewNotification = false): string {
     const tracked=[...new Set(this.state.all<Worker>("workers").filter(w=>w.taskId===id).map(w=>w.conversationId))];
-    this.outbox(
+    return this.outbox(
       `/tasks/${encodeURIComponent(id)}/events`,
       {
         comment,
@@ -1180,6 +1185,7 @@ export class Runtime implements ChatService {
       throw new ApiError(
         response.status,
         `Sokosumi ${method} ${path.split("?")[0]} returned ${response.status}`,
+        await apiRejection(response),
       );
     return record(await response.json());
   }
@@ -1477,6 +1483,7 @@ export class Runtime implements ChatService {
         item.retryAt = undefined;
       } catch (error) {
         item.httpStatus=error instanceof ApiError ? error.status : undefined;
+        item.rejectionKind=error instanceof ApiError ? error.rejectionKind : undefined;
         if (item.status === "sending")
           item.status =
             error instanceof ApiError && error.status === 429
@@ -1574,6 +1581,10 @@ export class Runtime implements ChatService {
     }
     if (job.status !== "in_progress") throw new Error("Job is not active");
     if (job.kind === "incident" && !["progress","thread"].includes(action)) throw new Error("Incident notification turns cannot mutate or retry underlying work");
+    if (job.kind === "review") {
+      const c = this.state.get<Conversation>("conversations", job.conversationId);
+      if (!c || c.owner !== job.reviewOwner || c.metadata.sokosumi_organization_id !== job.reviewOrganization) throw new Error("Periodic scope changed");
+    }
     if (action === "incident-report") {
       const c=this.state.get<Conversation>("conversations",job.conversationId)!;
       const item=this.state.get<Incident>("incidents",textField(body,"incidentId"));
@@ -1587,10 +1598,6 @@ export class Runtime implements ChatService {
       if (Object.keys(body).some(key => !["jobId", "items"].includes(key))) throw new Error("Unsupported progress arguments");
       this.recordProgress(job.id, body.items);
       return { ok: true };
-    }
-    if (job.kind === "review") {
-      const c = this.state.get<Conversation>("conversations", job.conversationId);
-      if (!c || c.owner !== job.reviewOwner || c.metadata.sokosumi_organization_id !== job.reviewOrganization) throw new Error("Periodic scope changed");
     }
     if (action === "recover-chat") {
       if (job.kind === "review") throw new Error("Periodic review cannot authorize recovery");
@@ -1677,8 +1684,12 @@ export class Runtime implements ChatService {
       );
     if (action === "task-report") {
       if (!job.taskId) throw new Error("No task in this request");
-      const task = await this.assertAssigned(job.taskId);
+      const content = textField(body, "text");
       const status = typeof body.status === "string" ? body.status : undefined;
+      const receipt = createHash("sha256").update(JSON.stringify([job.id,job.conversationId,job.taskId,status??null,content])).digest("hex");
+      const previous = this.state.get<{notificationId:string}>("taskReportReceipts",receipt);
+      if(previous) return {ok:true,...previous};
+      const task = await this.assertAssigned(job.taskId);
       if (
         status &&
         ![
@@ -1695,15 +1706,21 @@ export class Runtime implements ChatService {
         throw new Error(
           "Task still has unfinished workers; report progress with RUNNING instead",
         );
-      const content=textField(body,"text");
       const label=status==="FAILED" ? "failure" : ["INPUT_REQUIRED","APPROVAL_REQUIRED","AWAITING_EXTERNAL"].includes(status??"") ? "blocked" : undefined;
-      this.reportTask(
-        job.taskId,
-        label ? noticeText(label,content,[{taskId:job.taskId}]) : content,
-        status === task.status ? undefined : status,
-      );
-      this.state.put("jobTaskReport",job.id,textField(body,"text"));
-      return { ok: true };
+      return this.state.transaction(()=>{
+        // Recheck after the asynchronous ownership read: concurrent lost-ack retries
+        // must reserve the same delivery, including when the first outcome is uncertain.
+        const previous=this.state.get<{notificationId:string}>("taskReportReceipts",receipt);
+        if(previous)return {ok:true,...previous};
+        const notificationId=this.reportTask(
+          job.taskId!,
+          label ? noticeText(label,content,[{taskId:job.taskId}]) : content,
+          status === task.status ? undefined : status,
+        );
+        this.state.put("taskReportReceipts",receipt,{notificationId});
+        this.state.put("jobTaskReport",job.id,content);
+        return {ok:true,notificationId};
+      });
     }
     const worker = this.state.get<Worker>(
       "workers",

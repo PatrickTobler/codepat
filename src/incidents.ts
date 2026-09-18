@@ -7,6 +7,7 @@ export interface Incident {
   id: string; conversationId: string; owner: string; organization: string;
   source: "turn" | "worker" | "delivery" | "monitor"; sourceId: string;
   httpStatus?: number;
+  rejectionKind?: string;
   kind: NoticeKind; cause: string; taskId?: string; workerId?: string;
   createdAt: number; attempts: number; reviewedAt?: number; fallback?: boolean;
   episodeEndedAt?: number;
@@ -30,7 +31,7 @@ export function causeText(cause: string): string {
 }
 export const INCIDENT_INSTRUCTION = `You are the CodePat orchestrator, the user's single conversational contact. Review only the structured incidents supplied in this conversation. Explain affected work, verified cause versus unknown, stopped/blocked status and concrete next steps, with supplied task links. Do not quote raw worker reports or private diagnostics. This turn is notification-only: it does not authorize retrying the failed operation, provider-policy workarounds, approval, sends, new tasks/workers or recovery. Return a concise user-facing explanation; the bridge labels it as an orchestrator incident update. Return [NO_UPDATE] only if no new information warrants a notice. Notification failure is retained, not recursively retried.`;
 interface Episode { sequence: number; active: boolean; incidentId?: string }
-type IncidentInput = Pick<Incident,"source"|"sourceId"|"kind"|"cause"> & Partial<Pick<Incident,"taskId"|"workerId"|"httpStatus">>;
+type IncidentInput = Pick<Incident,"source"|"sourceId"|"kind"|"cause"> & Partial<Pick<Incident,"taskId"|"workerId"|"httpStatus"|"rejectionKind">>;
 export class Incidents {
   readonly state: State;
   constructor(state: State) { this.state=state; }
@@ -79,7 +80,10 @@ export class Incidents {
     const w=i.workerId ? this.state.get<Worker>("workers",i.workerId) : undefined;
     return {...i, explanation:causeText(i.cause),taskUrl:i.taskId ? `https://app.sokosumi.com/tasks/${encodeURIComponent(i.taskId)}`:undefined,
       worker:w && w.conversationId===i.conversationId ? {id:w.id,state:w.state,observedAt:w.observedAt,recoveryHold:Boolean(w.recoveryHold),resultAvailable:Boolean(w.result)} : undefined,
-      notifications:(i.notificationIds??[]).map(id=>({id,status:this.state.get<Outbox>("outbox",id)?.status??"unknown"}))};
+      notifications:(i.notificationIds??[]).map(id=>{
+        const delivery=this.state.get<Outbox>("outbox",id);
+        return {id,status:delivery?.status??"unknown",httpStatus:delivery?.httpStatus,rejectionKind:delivery?.rejectionKind};
+      })};
   }
   context(c: Conversation, advance=false) {
     const all=this.list(c);
@@ -88,7 +92,7 @@ export class Incidents {
     if(advance && selected.length)this.state.put("incidentContextOffset",c.id,(offset+20)%selected.length);
     const page=[...selected.slice(offset),...selected.slice(0,offset)].slice(0,20);
     return {pending: page.map(i=>this.view(i)),total:selected.length,
-      instruction:"Use incident-report for a verified explanation from a normal turn. Do not confuse notification acceptance with recipient reading, or reviewed incident with completed work. Uncertain delivery must not be replayed."};
+      instruction:"Use incident-report for a verified explanation from a normal turn. Do not confuse notification acceptance with recipient reading, or reviewed incident with completed work. Uncertain delivery must not be replayed. HTTP rejection is not proof of no side effects: insufficient_balance may include a committed pause event; reconcile before any retry."};
   }
   schedule(now=Date.now()): void {
     this.state.transaction(()=>{

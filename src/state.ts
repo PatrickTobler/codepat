@@ -69,6 +69,7 @@ export interface Delivery {
 }
 export interface Outbox {
   httpStatus?: number;
+  rejectionKind?: string;
   incidentIds?: string[];
   reviewNotification?: boolean;
   id: string;
