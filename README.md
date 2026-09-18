@@ -37,3 +37,5 @@ For a real host, follow [setup](docs/setup.md) in order: Linux/systemd and Herdr
 | `CODEPAT.md` | Coordinator operating prompt, rendered into its private runtime directory |
 
 [Chat deadlines and recovery](docs/recovery.md) covers timeout classification, safe retry boundaries and reboot preparation. [Architecture and operations](docs/operations.md) covers monitoring, steering, results, cleanup, recovery, trust and troubleshooting. [Projects](docs/projects.md) records the live API/auth contract and commands. [Verification](docs/verification.md) separates automated evidence from integration prerequisites. [NOTICE](NOTICE) and [LICENSE](LICENSE) preserve upstream attribution and terms.
+
+Periodic AI review is configurable and defaults to twenty minutes for scoped unfinished work. See [scheduling, silence and activation](docs/periodic-review.md).

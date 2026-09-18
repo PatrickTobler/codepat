@@ -48,6 +48,7 @@ const runtime = new Runtime(state, herdr, {
   apiKey: process.env.CODEPAT_API_KEY,
   coworkerId: process.env.CODEPAT_COWORKER_ID,
   workerIdleMs,
+  reviewIntervalMs: process.env.CODEPAT_REVIEW_INTERVAL_MS === undefined ? undefined : Number(process.env.CODEPAT_REVIEW_INTERVAL_MS),
   repositories: repositories as Record<string, string>,
 });
 const server = createCodePatServer({
@@ -197,7 +198,10 @@ loop(3000, async () => {
 loop(2000, () => runtime.deliver());
 loop(5000, () => runtime.pollTasks());
 loop(5000, () => runtime.flushOutbox());
-loop(10_000, ensureRunner);
+loop(10_000, async () => {
+  runtime.reviews.schedule(Date.now());
+  await ensureRunner();
+});
 startedAt = 0;
 await ensureRunner();
 console.log(
