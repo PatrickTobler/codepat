@@ -122,6 +122,10 @@ test("HTTP failure response labels bootstrap fallback and later delivery is auth
   const response=await fetch(`http://127.0.0.1:${a.port}/v1/responses/${job.id}`,{headers:{"x-sokosumi-user-id":f.c.owner,"x-sokosumi-organization-id":"org"}});
   assert.equal(response.status,200);const body=await response.json() as any;
   assert.equal(body.status,"failed");assert.match(body.output_text,/Automated system notice/);assert.doesNotMatch(body.output_text,/RAW_FAILURE/);
+  const jobsBefore=f.state.all("jobs").length;
+  const wire=await (await fetch(`http://127.0.0.1:${a.port}/v1/responses/${job.id}?stream=true`,{headers:{"x-sokosumi-user-id":f.c.owner,"x-sokosumi-organization-id":"org"}})).text();
+  assert.match(wire,/event: response.failed/);assert.match(wire,/Automated system notice/);
+  assert.doesNotMatch(wire,/event: response.completed|RAW_FAILURE/);assert.equal(f.state.all("jobs").length,jobsBefore);
   const notification=f.claim();f.runtime.completeJob(notification.job.id,"The provider blocked this turn; the existing worker continues independently.");
   const sent:any[]=[];f.runtime.api=async(_p,m,b)=>{assert.equal(m,"POST");sent.push(b);return {data:{id:"accepted"}};};
   await f.runtime.flushOutbox();assert.equal(sent.length,1);assert.match(sent[0].content,/CodePat — Failure update/);
@@ -188,4 +192,14 @@ test("pending context rotates instead of starving incidents behind unchanged fai
   const a=f.runtime.incidents.context(f.c,true),b=f.runtime.incidents.context(f.c,true);
   assert.equal(new Set([...a.pending,...b.pending].map(i=>i.id)).size,35);
   assert.equal(a.total,35);assert.equal(a.pending.length,20);
+});
+
+test("an incident explanation cannot suppress unrelated required review stages",t=>{
+  const f=fixture(t);f.worker.state="blocked";f.state.put("workers",f.worker.id,f.worker);
+  f.state.put("workers","review-stage",{...f.worker,id:"review-stage",state:"completed"});
+  f.state.put("reviewWork","review-stage",{workerId:"review-stage",state:"pending",note:"Required independent review remains"});
+  f.runtime.reviews.schedule(0);
+  const n=f.claim();assert.equal(n.job.kind,"incident");f.runtime.completeJob(n.job.id,"One worker is blocked.");
+  assert.equal(f.runtime.reviews.status(f.c.id).schedule?.lastNotified,undefined);
+  assert.equal(f.runtime.reviews.evidence(f.c).needed,true);
 });

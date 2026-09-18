@@ -1030,7 +1030,15 @@ export class Runtime implements ChatService {
       for(const id of ids){const o=this.state.get<Outbox>("outbox",id)!;o.incidentIds=items.map(i=>i.id);this.state.put("outbox",id,o);}
       if(!automated){
         const schedule=this.state.get<import("./review.ts").ReviewSchedule>("reviewSchedules",c.id);
-        if(schedule){schedule.lastNotified=this.reviews.evidence(c).fingerprint;this.state.put("reviewSchedules",c.id,schedule);}
+        const evidence=this.reviews.evidence(c);
+        // Do not suppress an unrelated unfinished stage merely because this batch
+        // explained one blocker. Only match a wholly covered blocked snapshot.
+        const covered=evidence.snapshot.workers.length>0 && evidence.snapshot.workers.every(w=>
+          ["blocked","missing","unknown","recovery_blocked","launch_failed"].includes(w.state) && items.some(i=>i.workerId===w.id)) &&
+          evidence.snapshot.deliveries.length===0 && evidence.snapshot.outbox.every(o=>{
+            const full=this.state.get<Outbox>("outbox",o.id);return full?.reviewNotification || full?.incidentIds?.length;
+          });
+        if(schedule && covered){schedule.lastNotified=evidence.fingerprint;this.state.put("reviewSchedules",c.id,schedule);}
       }
       for(const i of items){
         if(automated)i.fallback=true;else i.reviewedAt=Date.now();

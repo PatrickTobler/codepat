@@ -33,7 +33,7 @@ node src/cli.ts incident-report <incident-id> --kind failure --file /absolute/pr
 
 Kinds: `failure`, `blocked`, `recovered`. This checks exact conversation ownership and is idempotent once reported. It does not resolve task state, clear approvals or prove delivery. Automatic `[NO_UPDATE]` records assessment without sending, not completion. Unchanged worker/monitor incidents are deduplicated; unresolved or undelivered notices remain in context.
 
-A notice prefers the originating room; otherwise it stays on its linked task. Missing destinations remain observable as `notificationMissing`, never guessed. Correlation IDs retain pending/sending/sent/uncertain/failed states (`sent` means accepted by API, not read). Failed notice delivery cannot create another incident job. Uncertain sends are never blindly retried; historical HTTP422 entries are not repaired or replayed. Older native sends without conversation correlation are not assigned to a guessed conversation; their existing owner-scoped status tools remain available.
+A notice prefers the originating room; otherwise it stays on its linked task. Missing destinations remain observable as `notificationMissing`, never guessed. Correlation IDs retain pending/sending/sent/uncertain/failed states (`sent` means accepted by API, not read). Failed notice delivery cannot create another incident job. Uncertain sends are never blindly retried; historical HTTP422 entries are not repaired or replayed. Historical outbox entries without a verified conversation remain unassigned rather than leaked across users. Older native sends without conversation correlation are not assigned to a guessed conversation; their existing owner-scoped status tools remain available.
 
 ## Examples
 
