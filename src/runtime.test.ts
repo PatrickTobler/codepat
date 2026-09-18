@@ -924,3 +924,36 @@ test("resume retries a repaired failed launch on the same worker and task", asyn
     f.close();
   }
 });
+
+test("missing completed session read returns saved evidence; held resume has no side effects", async () => {
+  const f=fixture();
+  try {
+    const c=f.runtime.createConversation("owner",{}); const j=f.runtime.createResponse("owner",c.id,"Resume authorized work"); f.runtime.nextJob();
+    const w={...worker("held",c.id),state:"completed",result:"Implementation only",recoveryHold:true}; f.state.put("workers",w.id,w); f.setAgents([]);
+    f.state.put("deliveries","old",{id:"old",workerId:w.id,status:"uncertain",text:"Historical instruction",createdAt:0});
+    const before=JSON.stringify(f.state.all("workers")); let calls=0; f.herdr.call=async()=>{calls++;return {};};
+    const read=await f.runtime.control("read",{jobId:j.id,workerId:w.id}) as {missing:boolean;text:string}; assert.equal(read.missing,true);assert.equal(read.text,w.result);
+    const resume=await f.runtime.control("resume",{jobId:j.id,workerId:w.id,text:"Continue"}) as {status:string}; assert.equal(resume.status,"recovery_blocked");
+    assert.equal(JSON.stringify(f.state.all("workers")),before);assert.equal(f.state.all("deliveries").length,1);assert.equal(calls,0);
+  } finally {f.close();}
+});
+
+test("verified missing completed session resumes same worker in new pane without replaying old instructions", async () => {
+  const f=fixture();
+  try {
+    const c=f.runtime.createConversation("owner",{}); const j=f.runtime.createResponse("owner",c.id,"Resume"); f.runtime.nextJob();
+    const w={...worker("restore",c.id),state:"completed",result:"Stage done"}; f.state.put("workers",w.id,w); f.state.put("meta","workspace","workspace");f.setAgents([]);
+    const calls:string[][]=[];f.herdr.call=async args=>{calls.push(args);return args[0]==="pane"?{panes:[]}:{root_pane:{pane_id:"new-pane"}};};
+    await f.runtime.control("resume",{jobId:j.id,workerId:w.id,text:"Authorized remaining stage"});
+    assert.equal(f.state.all("workers").length,1);assert.equal(f.state.get<Worker>("workers",w.id)!.worktree,w.worktree);assert.ok(calls.some(a=>a.includes("--last")));assert.equal(f.state.all("deliveries").length,1);
+  } finally {f.close();}
+});
+
+test("missing agent classification does not authorize duplicating a live pane process", async () => {
+  const f=fixture();
+  try {
+    const c=f.runtime.createConversation("owner",{});const j=f.runtime.createResponse("owner",c.id,"Resume");f.runtime.nextJob();const w={...worker("busy",c.id),state:"completed",result:"Stage done"};f.state.put("workers",w.id,w);f.state.put("meta","workspace","workspace");f.setAgents([]);
+    f.herdr.call=async args=>args[1]==="list"?{panes:[{pane_id:w.paneId}]}:{process_info:{shell_pid:1,foreground_processes:[{pid:2}]}};
+    const r=await f.runtime.control("resume",{jobId:j.id,workerId:w.id,text:"Continue"}) as {status:string};assert.equal(r.status,"recovery_blocked");assert.equal(f.state.all("deliveries").length,0);
+  } finally {f.close();}
+});

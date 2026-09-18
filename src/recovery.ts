@@ -1,3 +1,4 @@
+import { ProgressJournal } from "./progress.ts";
 import { dirname } from "node:path";
 import { existsSync, readFileSync, renameSync, writeFileSync, openSync, closeSync, fsyncSync } from "node:fs";
 
@@ -69,6 +70,10 @@ export function reconcileDeadTurn(
   const job = runtime.job(id);
   if (job.status !== "in_progress") return true;
   const stem = job.reservationProtocol === 1 ? `${job.id}.${job.generation ?? 0}` : job.id;
+  try {
+    const progress = new ProgressJournal(`${directory}/${stem}.progress.json`);
+    runtime.recordProgress(id, progress.items);
+  } catch { console.error("Progress recovery failed; retained journal for inspection."); }
   try {
     const saved = loadReceipt(`${directory}/${stem}.completion.json`);
     const turn = loadReceipt(`${directory}/${stem}.turn.json`);

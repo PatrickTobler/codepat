@@ -178,3 +178,13 @@ test("recovering the same chat reuses its existing task/worker operation instead
   assert.equal(returned.result, existing.result); assert.equal(returned.branch, existing.branch);
   assert.equal(f.state.all("workers").length, 1); assert.equal(f.state.all("outbox").length, 0);
 });
+
+test("dead runner recovers only matching-attempt public journal before completion", t => {
+  const f = fixture(t);
+  writeFileSync(join(f.dir, `${f.job.id}.0.progress.json`), JSON.stringify([{key:"0:tool",kind:"activity",text:"Checking files"}]));
+  writeFileSync(join(f.dir, `${f.job.id}.1.progress.json`), JSON.stringify([{key:"1:tool",kind:"activity",text:"Wrong future attempt"}]));
+  saveReceipt(join(f.dir, `${f.job.id}.0.completion.json`), { jobId:f.job.id,attempt:0,text:"Final" });
+  reconcileDeadTurn(f.runtime, f.dir, f.job.id, dead);
+  assert.deepEqual(f.runtime.getProgress(f.job.id).map(p=>p.text), ["Checking files"]);
+  assert.equal(f.runtime.job(f.job.id).status,"completed");
+});
