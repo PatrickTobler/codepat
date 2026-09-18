@@ -203,3 +203,110 @@ test("an incident explanation cannot suppress unrelated required review stages",
   assert.equal(f.runtime.reviews.status(f.c.id).schedule?.lastNotified,undefined);
   assert.equal(f.runtime.reviews.evidence(f.c).needed,true);
 });
+
+test("monitor outage episodes survive restart but verified health permits one new explanation",async t=>{
+  const f=fixture(t);let down=true;
+  f.runtime.herdr.agents=async()=>{if(down)throw new Error("Synthetic outage");return [];};
+  await f.runtime.monitor();await f.runtime.monitor();
+  const first=f.state.all<Incident>("incidents")[0];assert.equal(f.state.all("incidents").length,1);
+  const n=f.claim();f.runtime.completeJob(n.job.id,"Monitoring is unavailable; worker state needs inspection.");
+  const reviewed=f.state.get<Incident>("incidents",first.id)!;
+  assert.ok(reviewed.reviewedAt);assert.equal(reviewed.attempts,1);
+  const reopened=new State(join(f.dir,"state.sqlite"));
+  try {
+    const r=new Runtime(reopened,f.runtime.herdr,f.runtime.config);
+    r.captureIncidents(); // absent process-local error after restart is NOT healthy
+    await r.monitor();await r.monitor();assert.equal(reopened.all("incidents").length,1);
+    down=false;await r.monitor();assert.ok(reopened.get<Incident>("incidents",first.id)!.episodeEndedAt);
+    down=true;await r.monitor();await r.monitor();r.captureIncidents();
+    const incidents=reopened.all<Incident>("incidents");assert.equal(incidents.length,2);
+    const second=incidents.find(i=>i.id!==first.id)!;assert.equal(second.attempts,0);assert.equal(second.reviewedAt,undefined);
+    assert.equal(reopened.get<Incident>("incidents",first.id)!.reviewedAt,reviewed.reviewedAt);
+    r.incidents.schedule(Date.now()+300001);r.incidents.schedule(Date.now()+300002);
+    const job=r.nextJob("runner",1)!.job;assert.deepEqual(job.incidentIds,[second.id]);
+    r.completeJob(job.id,"Monitoring failed again after recovery; this is a new outage.");
+    assert.equal(reopened.all("outbox").length,2);assert.equal(reopened.all<Job>("jobs").filter(j=>j.kind==="incident").length,2);
+  } finally {reopened.close();}
+});
+
+test("same-generation worker blocked episodes recur only after observed health and retain holds",async t=>{
+  const f=fixture(t);f.worker.paneId="pane";f.state.put("workers",f.worker.id,f.worker);
+  let observed="blocked";
+  f.runtime.herdr.agents=async()=>[{pane_id:"pane",name:f.worker.name,cwd:f.worker.worktree,agent_status:observed}];
+  await f.runtime.monitor();await f.runtime.monitor();
+  const first=f.state.all<Incident>("incidents")[0];const n=f.claim();f.runtime.completeJob(n.job.id,"Worker needs a decision.");
+  observed="idle";await f.runtime.monitor();f.runtime.captureIncidents();
+  assert.equal(f.state.get<Worker>("workers",f.worker.id)!.recoveryHold,true);
+  assert.equal(f.state.get<Incident>("incidents",first.id)!.episodeEndedAt,undefined);
+  observed="working";await f.runtime.monitor(); // existing monitor semantics: real working state clears hold
+  assert.ok(f.state.get<Incident>("incidents",first.id)!.episodeEndedAt);
+  observed="blocked";await f.runtime.monitor();await f.runtime.monitor();
+  assert.equal(f.state.all("incidents").length,2);
+  assert.equal(f.state.get<Worker>("workers",f.worker.id)!.generation,1);
+  assert.equal(f.state.get<Worker>("workers",f.worker.id)!.recoveryHold,true);
+  const reopened=new State(join(f.dir,"state.sqlite"));
+  try {
+    const r=new Runtime(reopened,f.runtime.herdr,f.runtime.config);r.captureIncidents();await r.monitor();
+    assert.equal(reopened.all("incidents").length,2);assert.equal(reopened.get<Worker>("workers",f.worker.id)!.recoveryHold,true);
+    r.incidents.schedule(Date.now()+300001);const j=r.nextJob("runner",1)!.job;
+    assert.equal(j.incidentIds!.length,1);assert.notEqual(j.incidentIds![0],first.id);
+    r.completeJob(j.id,"The worker is blocked again; approval is still required.");
+    assert.equal(reopened.all("outbox").length,2);assert.equal(reopened.all("deliveries").length,0);
+  } finally {reopened.close();}
+});
+
+test("explicit worker restoration notices correlate to episodes without changing approval holds",t=>{
+  const f=fixture(t);
+  for(let episode=0;episode<2;episode++){
+    f.worker.state="blocked";f.runtime.workerNotice(f.worker,"Blocked");f.runtime.workerNotice(f.worker,"Blocked");
+    f.worker.recoveryHold=true;f.worker.state="idle";
+    f.runtime.workerNotice(f.worker,"A session exists but approval remains","recovered");
+    assert.equal(f.worker.recoveryHold,true);assert.equal(f.state.all<Incident>("incidents").filter(i=>i.kind==="recovered").length,episode);
+    // Synthetic already-authorized restoration; notification code never modifies the hold.
+    f.worker.recoveryHold=false;
+    f.runtime.workerNotice(f.worker,"Restoration verified","recovered");f.runtime.workerNotice(f.worker,"Restoration verified","recovered");
+    assert.equal(f.worker.recoveryHold,false);
+  }
+  assert.equal(f.state.all<Incident>("incidents").filter(i=>i.kind==="blocked").length,2);
+  assert.equal(f.state.all<Incident>("incidents").filter(i=>i.kind==="recovered").length,2);
+  assert.equal(f.worker.generation,1);assert.equal(f.state.all("deliveries").length,0);assert.equal(f.state.all("outbox").length,0);
+});
+
+test("successful monitor observation cannot close a task-polling outage",async t=>{
+  const f=fixture(t);f.runtime.config.coworkerId="coworker";let pollDown=true;
+  f.runtime.api=async(path,method)=>{
+    assert.ok(!method||method==="GET");
+    if(path==="/tasks/task")return {data:{id:"task",assigneeId:"coworker",status:"RUNNING"}};
+    if(pollDown)throw new Error("Synthetic polling outage");return {data:[]};
+  };
+  await f.runtime.pollTasks();await f.runtime.pollTasks();assert.equal(f.state.all("incidents").length,1);
+  f.runtime.herdr.agents=async()=>{throw new Error("Synthetic monitor outage");};await f.runtime.monitor();
+  assert.equal(f.state.all("incidents").length,2);
+  f.runtime.herdr.agents=async()=>[];await f.runtime.monitor();await f.runtime.pollTasks();
+  assert.equal(f.state.all("incidents").length,2);
+  pollDown=false;await f.runtime.pollTasks();pollDown=true;await f.runtime.pollTasks();await f.runtime.pollTasks();
+  const incidents=f.state.all<Incident>("incidents");assert.equal(incidents.length,3);
+  assert.equal(incidents.filter(i=>i.sourceId.startsWith("poll:episode:")).length,2);
+});
+
+test("episode health transitions are isolated by conversation, owner and organization",t=>{
+  const f=fixture(t);const input={source:"monitor",kind:"blocked",cause:"monitor_unavailable"} as const;
+  const first=f.runtime.incidents.observe(f.c,"monitor",input);
+  for(const c of [{...f.c,id:"another"},{...f.c,owner:"another"},{...f.c,metadata:{sokosumi_organization_id:"another"}}]){
+    f.runtime.incidents.healthy(c,"monitor");
+    assert.equal(f.runtime.incidents.observe(f.c,"monitor",input).id,first.id);
+    assert.notEqual(f.runtime.incidents.observe(c,"monitor",input).id,first.id);
+  }
+  assert.equal(f.state.get<Incident>("incidents",first.id)!.episodeEndedAt,undefined);
+});
+
+test("a retained recovery block cannot flap episodes merely because its pane is working",async t=>{
+  const f=fixture(t);f.worker.paneId="pane";f.worker.state="recovery_blocked";f.worker.recoveryHold=false;f.state.put("workers",f.worker.id,f.worker);
+  f.runtime.workerNotice(f.worker,"Blocked");
+  f.runtime.herdr.agents=async()=>[{pane_id:"pane",name:f.worker.name,cwd:f.worker.worktree,agent_status:"working"}];
+  for(let n=0;n<3;n++){await f.runtime.monitor();f.runtime.captureIncidents();}
+  f.runtime.workerNotice(f.state.get<Worker>("workers",f.worker.id)!,"Unverified restoration","recovered");
+  assert.equal(f.state.all("incidents").length,1);
+  assert.equal(f.state.all<Incident>("incidents")[0].episodeEndedAt,undefined);
+  assert.equal(f.state.get<Worker>("workers",f.worker.id)!.state,"recovery_blocked");
+});

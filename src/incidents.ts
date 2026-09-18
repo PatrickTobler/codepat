@@ -9,6 +9,7 @@ export interface Incident {
   httpStatus?: number;
   kind: NoticeKind; cause: string; taskId?: string; workerId?: string;
   createdAt: number; attempts: number; reviewedAt?: number; fallback?: boolean;
+  episodeEndedAt?: number;
   notificationMissing?: boolean;
   reviewFailure?: string; notificationIds?: string[];
 }
@@ -28,15 +29,49 @@ export function causeText(cause: string): string {
   return Object.hasOwn(fixed,cause) ? fixed[cause] : failureText(cause);
 }
 export const INCIDENT_INSTRUCTION = `You are the CodePat orchestrator, the user's single conversational contact. Review only the structured incidents supplied in this conversation. Explain affected work, verified cause versus unknown, stopped/blocked status and concrete next steps, with supplied task links. Do not quote raw worker reports or private diagnostics. This turn is notification-only: it does not authorize retrying the failed operation, provider-policy workarounds, approval, sends, new tasks/workers or recovery. Return a concise user-facing explanation; the bridge labels it as an orchestrator incident update. Return [NO_UPDATE] only if no new information warrants a notice. Notification failure is retained, not recursively retried.`;
+interface Episode { sequence: number; active: boolean; incidentId?: string }
+type IncidentInput = Pick<Incident,"source"|"sourceId"|"kind"|"cause"> & Partial<Pick<Incident,"taskId"|"workerId"|"httpStatus">>;
 export class Incidents {
   readonly state: State;
   constructor(state: State) { this.state=state; }
   owns(i: Incident, c: Conversation): boolean { return i.conversationId===c.id && i.owner===c.owner && i.organization===(c.metadata.sokosumi_organization_id ?? ""); }
-  record(c: Conversation, input: Pick<Incident,"source"|"sourceId"|"kind"|"cause"> & Partial<Pick<Incident,"taskId"|"workerId"|"httpStatus">>, now=Date.now()): Incident {
+  record(c: Conversation, input: IncidentInput, now=Date.now()): Incident {
     const id=createHash("sha256").update(JSON.stringify([c.id,c.owner,c.metadata.sokosumi_organization_id,input.source,input.sourceId])).digest("hex");
     const old=this.state.get<Incident>("incidents",id); if(old) return old;
     const i:Incident={...input,cause:safeCause(input.cause),id,conversationId:c.id,owner:c.owner,organization:c.metadata.sokosumi_organization_id??"",createdAt:now,attempts:0};
     this.state.put("incidents",id,i); return i;
+  }
+  private episodeKey(c: Conversation, channel: string): string {
+    return createHash("sha256").update(JSON.stringify([c.id,c.owner,c.metadata.sokosumi_organization_id??"",channel])).digest("hex");
+  }
+  // A restart/undefined in-memory error is not a healthy observation. Only the
+  // successful observer or verified recovery path calls healthy().
+  observe(c: Conversation, channel: string, input: Omit<IncidentInput,"sourceId">, now=Date.now()): Incident {
+    return this.state.transaction(()=>{
+      const key=this.episodeKey(c,channel);
+      const previous=this.state.get<Episode>("incidentEpisodes",key);
+      if(previous?.active && previous.incidentId){
+        const incident=this.state.get<Incident>("incidents",previous.incidentId);
+        if(!incident || !this.owns(incident,c))throw new Error("Incident episode evidence missing or scope changed");
+        return incident;
+      }
+      const sequence=(previous?.sequence??0)+1;
+      const incident=this.record(c,{...input,sourceId:channel+":episode:"+sequence},now);
+      this.state.put<Episode>("incidentEpisodes",key,{sequence,active:true,incidentId:incident.id});
+      return incident;
+    });
+  }
+  healthy(c: Conversation, channel: string, now=Date.now()): number {
+    return this.state.transaction(()=>{
+      const key=this.episodeKey(c,channel);
+      const previous=this.state.get<Episode>("incidentEpisodes",key);
+      if(previous?.active){
+        const incident=previous.incidentId ? this.state.get<Incident>("incidents",previous.incidentId) : undefined;
+        if(incident && this.owns(incident,c)){incident.episodeEndedAt=now;this.state.put("incidents",incident.id,incident);}
+        this.state.put<Episode>("incidentEpisodes",key,{...previous,active:false});
+      }
+      return previous?.sequence??0;
+    });
   }
   list(c: Conversation): Incident[] { return this.state.all<Incident>("incidents").filter(i=>this.owns(i,c)); }
   pending(c: Conversation): Incident[] { return this.list(c).filter(i=>!i.reviewedAt); }
