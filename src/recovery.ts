@@ -78,7 +78,7 @@ export function reconcileDeadTurn(
         (saved.error !== undefined && typeof saved.error !== "string") || (!saved.error && !saved.text.trim()))) throw new Error("Invalid completion");
     if (turn && (!valid(turn) || typeof turn.launched !== "boolean")) throw new Error("Invalid turn receipt");
     const thread = saved?.threadId ?? turn?.threadId;
-    if (typeof thread === "string") runtime.state.put("threads", job.conversationId, thread);
+    if (job.kind !== "review" && typeof thread === "string") runtime.state.put("threads", job.conversationId, thread);
     if (saved) runtime.completeJob(id, saved.text as string, saved.error as string | undefined);
     else if (turn?.completed === true && existsSync(`${directory}/${stem}.txt`)) {
       const text = readFileSync(`${directory}/${stem}.txt`, "utf8");
