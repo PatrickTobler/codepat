@@ -32,6 +32,8 @@ Edit the private file, replacing the organization ID and absolute default checko
 | `CODEPAT_PORT` | Loopback port, default 3210 |
 | `CODEPAT_API_URL` | Sokosumi API base, default `https://api.sokosumi.com/v1` |
 | `CODEPAT_COWORKER_ID`, `CODEPAT_API_KEY` | Registered coworker ID and dedicated key; both enable task intake |
+| `CODEPAT_CONTACT_ACCOUNTS_FILE` | Optional private per-user directory account registry; see [native contacts](contacts.md) |
+
 | `CODEPAT_CHAT_TIMEOUT_MS` | Chat budget, default 600000 ms; whole seconds, minimum 60000, maximum 3600000 |
 | `CODEPAT_WORKER_IDLE_MS` | Completed worker cleanup delay, default 900000; minimum 1000 |
 | `HERDR_ENV`, `HERDR_SOCKET_PATH` | Set by installer; override socket for intended session |

@@ -2,6 +2,7 @@ import { chatTimeoutMs, deadlines, failureKind, failureText, saveReceipt, type T
 import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFile, unlink } from "node:fs/promises";
+import { userInfo } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
@@ -11,6 +12,9 @@ import { Herdr } from "./herdr.ts";
 import { record, textField } from "./state.ts";
 
 const exec = promisify(execFile);
+// Herdr can start as a system service without a login session's user-bus environment.
+process.env.XDG_RUNTIME_DIR ??= `/run/user/${userInfo().uid}`;
+process.env.DBUS_SESSION_BUS_ADDRESS ??= `unix:path=${process.env.XDG_RUNTIME_DIR}/bus`;
 const herdr = new Herdr();
 const runnerId = randomUUID();
 const chatDeadline = chatTimeoutMs(process.env.CODEPAT_CHAT_TIMEOUT_MS ?? 600_000);

@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { Contacts } from "./contacts.ts";
 import { type Agent, type HerdrPort, paneFrom } from "./herdr.ts";
 import type { ChatService } from "./http.ts";
 import { inspectProject, pages, projectId } from "./projects.ts";
@@ -35,6 +36,7 @@ export interface RuntimeConfig {
   workerIdleMs?: number;
   reviewIntervalMs?: number;
   repositories?: Record<string, string>;
+  contactAccountsFile?: string;
 }
 interface Scope {
   kind: "job" | "worker";
@@ -58,10 +60,13 @@ export class Runtime implements ChatService {
   runnerAt = 0;
   reviews: Reviews;
   workerOperations = new Set<string>();
+  contacts: Contacts;
   constructor(state: State, herdr: HerdrPort, config: RuntimeConfig) {
     this.state = state;
     this.herdr = herdr;
     this.config = config;
+    this.contacts = new Contacts(state, config);
+
     this.reviews = new Reviews(state, reviewInterval(config.reviewIntervalMs));
     // An interrupted send may already have reached the recipient. Never replay blindly.
     for (const item of state.all<Delivery>("deliveries")) {
@@ -120,6 +125,11 @@ export class Runtime implements ChatService {
         "workers",
         "instances",
         "repositories",
+        "contacts",
+        "dm-send",
+        "dm-status",
+        "dm-retry",
+
         "recover-chat",
         "review-status",
         "review-work",
@@ -872,10 +882,17 @@ export class Runtime implements ChatService {
       jobConfig,
       threadId: job.kind === "review" ? undefined : this.state.get<string>("threads", job.conversationId),
       context: job.kind === "review" ? {
+        contactPolicy: { taskCoordination: this.contacts.coordinationAllowed({ userId: this.conversationOwner(job.conversationId) ?? "", organizationId: this.state.get<Conversation>("conversations", job.conversationId)?.metadata.sokosumi_organization_id ?? "" }) },
         review: this.reviews.context(this.state.get<Conversation>("conversations", job.conversationId)!),
         instructions: "Metadata only. Use scoped read/workers for details as needed. Do not infer missing authorization.",
       } : {
         workerKinds: ["codex", "claude"],
+        contactPolicy: { taskCoordination: this.contacts.coordinationAllowed({ userId: this.conversationOwner(job.conversationId)!, organizationId: this.state.get<Conversation>("conversations", job.conversationId)?.metadata.sokosumi_organization_id ?? "" }) },
+        directMessages: this.contacts.recent({
+          userId: this.conversationOwner(job.conversationId) ?? "",
+          organizationId: this.state.get<Conversation>("conversations", job.conversationId)?.metadata.sokosumi_organization_id ?? "",
+        }),
+
         recoveryNote: job.recoveryNote,
         workers: this.workers(job),
         deliveryProblems: this.state
@@ -1442,6 +1459,28 @@ export class Runtime implements ChatService {
         textField(body, "threadId"),
       );
       return { ok: true };
+    }
+    if (["contacts", "dm-send", "dm-status", "dm-retry"].includes(action)) {
+      const allowed = action === "contacts" ? ["jobId", "query"]
+        : action === "dm-send" ? ["jobId", "key", "query", "recipientId", "roomId", "text", "coordination"] : ["jobId", "key"];
+      if (Object.keys(body).some(key => !allowed.includes(key)))
+        throw new Error("Unsupported contact arguments; identity and credentials come from the active request");
+      const conversation = this.projectConversation(job);
+      const scope = { userId: conversation.owner, organizationId: textField(conversation.metadata, "sokosumi_organization_id") };
+      if (action === "contacts") return this.contacts.lookup(scope, textField(body, "query"));
+      const key = textField(body, "key");
+      if (action === "dm-status") return this.contacts.get(scope, key);
+      if (job.kind === "review" && ["dm-send", "dm-retry"].includes(action)) {
+        const purpose = action === "dm-send" ? body.coordination : this.contacts.get(scope, key).request.coordination;
+        if (typeof purpose !== "string" || !purpose.trim() || !this.contacts.coordinationAllowed(scope))
+          throw new Error("Periodic contact requires the scoped standing coordination preference and task purpose");
+      }
+      if (action === "dm-retry") return this.contacts.retry(scope, key);
+      const queued = this.contacts.queue(scope, key, body);
+      // Return a final local state when possible; intent is durable first. The
+      // independent delivery loop also recovers queued work after disconnects.
+      await this.contacts.deliverQueued(queued.id);
+      return this.contacts.get(scope, key);
     }
     if (action === "projects")
       return pages(this.api.bind(this), "/projects", this.contextHeaders(this.projectConversation(job)));
