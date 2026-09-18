@@ -1,3 +1,4 @@
+import { Incidents, noticeText, safeCause, causeText, type Incident, type NoticeKind } from "./incidents.ts";
 import { MAX_PROGRESS, validateProgress, type Progress } from "./progress.ts";
 import { Reviews, reviewInterval, type ReviewWork } from "./review.ts";
 import { failureText } from "./recovery.ts";
@@ -11,7 +12,7 @@ import {
 } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { Contacts } from "./contacts.ts";
+import { Contacts, type DirectSend } from "./contacts.ts";
 import { type Agent, type HerdrPort, paneFrom } from "./herdr.ts";
 import type { ChatService } from "./http.ts";
 import { inspectProject, pages, projectId } from "./projects.ts";
@@ -62,11 +63,13 @@ export class Runtime implements ChatService {
   reviews: Reviews;
   workerOperations = new Set<string>();
   contacts: Contacts;
+  incidents: Incidents;
   constructor(state: State, herdr: HerdrPort, config: RuntimeConfig) {
     this.state = state;
     this.herdr = herdr;
     this.config = config;
     this.contacts = new Contacts(state, config);
+    this.incidents = new Incidents(state);
 
     this.reviews = new Reviews(state, reviewInterval(config.reviewIntervalMs));
     // An interrupted send may already have reached the recipient. Never replay blindly.
@@ -133,6 +136,7 @@ export class Runtime implements ChatService {
         "dm-retry",
 
         "recover-chat",
+        "incident-report",
         "review-status",
         "review-work",
         "projects",
@@ -341,7 +345,7 @@ export class Runtime implements ChatService {
       if (worker.taskId)
         this.reportTask(
           worker.taskId,
-          `Started Herdr worker ${name} in ${worker.paneId}. Branch: ${worker.branch}.`,
+          "Automated system status: worker started; the orchestrator will assess and report its results.",
           "RUNNING",
         );
       this.queueInstruction(
@@ -617,13 +621,18 @@ export class Runtime implements ChatService {
     this.state.put("deliveries", item.id, item);
     return item;
   }
-  workerNotice(worker: Worker, message: string): void {
+  workerNotice(worker: Worker, message: string, noticeKind?: NoticeKind): void {
+    if(noticeKind || ["blocked","missing","unknown","recovery_blocked","launch_failed"].includes(worker.state)){
+      const c=this.state.get<Conversation>("conversations",worker.conversationId);
+      if(c)this.incidents.record(c,{source:"worker",sourceId:worker.id+":"+(worker.generation??0)+":"+worker.state+":"+(noticeKind??""),kind:noticeKind??"blocked",cause:noticeKind==="recovered"?"worker_recovered":worker.state==="missing"||worker.state==="unknown"?"worker_missing":"worker_blocked",workerId:worker.id,taskId:worker.taskId});
+      return;
+    }
     this.state.enqueue({
       conversationId: worker.conversationId,
       kind: "worker",
       taskId: worker.taskId,
       workerId: worker.id,
-      input: `${message}\nWorker: ${worker.name} (${worker.id}). State: ${worker.state}. ${worker.result ?? ""}`,
+      input: `${message}\nWorker: ${worker.name} (${worker.id}). State: ${worker.state}. ${(worker.result ?? "").slice(0,16000)}`,
     });
   }
   async monitor(): Promise<void> {
@@ -685,6 +694,7 @@ export class Runtime implements ChatService {
       }
     } catch (error) {
       this.monitorError = String(error);
+      this.captureIncidents();
     }
   }
   async recoverWorkers(now = Date.now()): Promise<void> {
@@ -797,12 +807,13 @@ export class Runtime implements ChatService {
         if (task.status === "READY")
           this.reportTask(
             worker.taskId,
-            `Recovered worker ${worker.name}; continuing the existing task.`,
+            "Automated system status: existing worker session restored; task completion is not yet verified.",
             "RUNNING",
           );
         this.workerNotice(
           worker,
           `Recovered the interrupted worker in ${worker.paneId}; continuing the same task and worktree (attempt ${worker.recoveryAttempts}/2).`,
+          "recovered",
         );
       } catch (error) {
         worker.error = String(error);
@@ -818,6 +829,7 @@ export class Runtime implements ChatService {
           this.workerNotice(
             worker,
             `Recovery needs attention: ${worker.error}`,
+            "blocked",
           );
       } finally {
         this.workerOperations.delete(worker.id);
@@ -864,10 +876,8 @@ export class Runtime implements ChatService {
         item.status = "sent";
       } catch (error) {
         item.status = "uncertain";
-        this.workerNotice(
-          worker,
-          `Instruction delivery could not be confirmed: ${String(error)}. Inspect before resending. Instruction: ${item.text}`,
-        );
+        const c=this.state.get<Conversation>("conversations",worker.conversationId);
+        if(c)this.incidents.record(c,{source:"delivery",sourceId:"instruction:"+item.id,kind:"blocked",cause:"delivery_uncertain",workerId:worker.id,taskId:worker.taskId});
       } finally {
         this.workerOperations.delete(worker.id);
       }
@@ -881,6 +891,8 @@ export class Runtime implements ChatService {
     context: unknown;
   } | null {
     this.runnerAt = Date.now();
+    this.captureIncidents();
+    this.incidents.schedule();
     const active = this.state
       .all<Job>("jobs")
       .find((job) => job.status === "in_progress");
@@ -893,9 +905,12 @@ export class Runtime implements ChatService {
       .all<Job>("jobs")
       .filter((job) => job.status === "queued");
     const job =
-      active ?? queued.find((job) => job.kind === "chat") ?? queued.find(job => job.kind !== "review") ?? queued[0];
+      active ?? queued.find((job) => job.kind === "chat") ?? queued.find(job => job.kind === "incident") ?? queued.find(job => job.kind !== "review") ?? queued[0];
     if (!job) return null;
     if (!active && job.kind === "review" && !this.reviews.claim(job, Date.now())) return this.nextJob(runnerId, protocol);
+    if (!active && job.kind === "incident" && !this.incidents.selected(job).length) {
+      job.status="completed"; job.text=""; this.state.put("jobs",job.id,job); return this.nextJob(runnerId,protocol);
+    }
     // Prepare credentials before marking a claim; an I/O failure leaves the job queued.
     let jobConfig = this.state.get<string>("jobConfigs", job.id);
     if (!jobConfig) jobConfig = this.scopedConfig({ kind: "job", id: job.id, generation: job.generation ?? 0 });
@@ -910,12 +925,14 @@ export class Runtime implements ChatService {
     return {
       job,
       jobConfig,
-      threadId: job.kind === "review" ? undefined : this.state.get<string>("threads", job.conversationId),
-      context: job.kind === "review" ? {
+      threadId: ["review","incident"].includes(job.kind) ? undefined : this.state.get<string>("threads", job.conversationId),
+      context: job.kind === "incident" ? {incidents:this.incidents.selected(job).map(i=>this.incidents.view(i)), instruction:"Notification-only turn; underlying work must not be replayed."} : job.kind === "review" ? {
+        incidents: this.incidents.context(this.state.get<Conversation>("conversations",job.conversationId)!,true),
         contactPolicy: { taskCoordination: this.contacts.coordinationAllowed({ userId: this.conversationOwner(job.conversationId) ?? "", organizationId: this.state.get<Conversation>("conversations", job.conversationId)?.metadata.sokosumi_organization_id ?? "" }) },
         review: this.reviews.context(this.state.get<Conversation>("conversations", job.conversationId)!),
         instructions: "Metadata only. Use scoped read/workers for details as needed. Do not infer missing authorization.",
       } : {
+        incidents: this.incidents.context(this.state.get<Conversation>("conversations",job.conversationId)!,true),
         workerKinds: ["codex", "claude"],
         contactPolicy: { taskCoordination: this.contacts.coordinationAllowed({ userId: this.conversationOwner(job.conversationId)!, organizationId: this.state.get<Conversation>("conversations", job.conversationId)?.metadata.sokosumi_organization_id ?? "" }) },
         directMessages: this.contacts.recent({
@@ -924,19 +941,19 @@ export class Runtime implements ChatService {
         }),
 
         recoveryNote: job.recoveryNote,
-        workers: this.workers(job),
+        workers: this.workers(job).filter(w=>w.conversationId===job.conversationId).map(w=>({...w,error:w.error ? "Worker operation failed; inspect scoped evidence before retrying." : undefined})),
         deliveryProblems: this.state
           .all<Delivery>("deliveries")
           .filter(
             (item) =>
               !["sent", "superseded"].includes(item.status) &&
-              this.workers(job).some((w) => w.id === item.workerId),
+              this.workers(job).some((w) => w.id === item.workerId && w.conversationId===job.conversationId),
           ),
         uncertainNotifications: this.state
           .all<Outbox>("outbox")
-          .filter((item) => item.status === "uncertain").length,
+          .filter((item) => item.status === "uncertain" && item.conversationId === job.conversationId).length,
         monitorAt: this.monitorAt,
-        monitorError: this.monitorError,
+        monitorError: this.monitorError ? "monitor_unavailable" : undefined,
         taskPolling: Boolean(this.config.apiKey && this.config.coworkerId),
         deliveryFailures: this.state
           .all<Outbox>("outbox")
@@ -944,14 +961,12 @@ export class Runtime implements ChatService {
             (item) =>
               Boolean(item.lastError) &&
               ["pending", "uncertain", "failed"].includes(item.status) &&
-              (!item.conversationId ||
-                this.conversationOwner(item.conversationId) ===
-                  this.conversationOwner(job.conversationId)),
+              item.conversationId === job.conversationId,
           )
           .map((item) => ({
             id: item.id,
             path: item.path,
-            error: item.lastError,
+            error: item.status === "uncertain" ? "delivery_uncertain" : "delivery_failed",
             attempts: item.attempts,
           })),
       },
@@ -980,18 +995,88 @@ export class Runtime implements ChatService {
       this.state.transaction(() => this.requeueChat(id, "Recovered an unstarted reservation; no model process was authorized to launch."));
     } else this.completeJob(id, failureText("recovery_required"), "recovery_required");
   }
+  captureIncidents(): void {
+    const conversations=this.state.all<Conversation>("conversations");
+    for(const c of conversations){
+      const workers=this.state.all<Worker>("workers").filter(w=>w.conversationId===c.id);
+      for(const w of workers.filter(w=>["launch_failed","recovery_blocked","blocked","missing","unknown"].includes(w.state)))
+        this.incidents.record(c,{source:"worker",sourceId:w.id+":"+(w.generation??0)+":"+w.state+":",kind:"blocked",cause:w.state==="missing"||w.state==="unknown"?"worker_missing":"worker_blocked",workerId:w.id,taskId:w.taskId});
+      for(const d of this.state.all<Delivery>("deliveries").filter(d=>d.status==="uncertain" && workers.some(w=>w.id===d.workerId))){
+        const w=workers.find(w=>w.id===d.workerId)!;
+        this.incidents.record(c,{source:"delivery",sourceId:"instruction:"+d.id,kind:"blocked",cause:"delivery_uncertain",workerId:w.id,taskId:w.taskId});
+      }
+      for(const o of this.state.all<Outbox>("outbox").filter(o=>o.conversationId===c.id && (["failed","uncertain"].includes(o.status) || (o.status==="pending" && Boolean(o.lastError))))){
+        // A notification cannot create another notification failure job recursively.
+        if(o.incidentIds?.length)continue;
+        const task=/^\/tasks\/([^/]+)\/events$/.exec(o.path)?.[1];
+        this.incidents.record(c,{source:"delivery",sourceId:"outbox:"+o.id,kind:"blocked",cause:o.status==="uncertain"?"delivery_uncertain":"delivery_failed",httpStatus:o.httpStatus,taskId:task?decodeURIComponent(task):undefined});
+      }
+      for(const d of this.state.all<DirectSend>("directSends").filter(d=>d.conversationId===c.id && d.userId===c.owner && d.organizationId===c.metadata.sokosumi_organization_id && ["uncertain","failed"].includes(d.status)))
+        this.incidents.record(c,{source:"delivery",sourceId:"direct:"+d.id,kind:"blocked",cause:d.status==="uncertain"?"delivery_uncertain":"delivery_failed"});
+      if((this.monitorError || this.pollError) && workers.some(w=>!["completed","stopped"].includes(w.state)))
+        this.incidents.record(c,{source:"monitor",sourceId:"monitor-unavailable",kind:"blocked",cause:"monitor_unavailable"});
+    }
+  }
+  incidentNotice(job:Job, items:Incident[], kind:NoticeKind, text:string, automated=false): void {
+    this.state.transaction(()=>{
+      const c=this.state.get<Conversation>("conversations",job.conversationId)!;
+      if(items.some(i=>!this.incidents.owns(i,c)))throw new Error("Incident scope changed");
+      const content=noticeText(kind,text,items,automated);
+      const ids:string[]=[];
+      if(c.metadata.sokosumi_room_id || c.metadata.sokosumi_conversation_id)
+        ids.push(this.outbox(`/chat-conversations/${encodeURIComponent(c.id)}/messages`,{content},c.id));
+      else for(const taskId of new Set(items.flatMap(i=>i.taskId?[i.taskId]:[])))
+        ids.push(this.outbox(`/tasks/${encodeURIComponent(taskId)}/events`,{comment:content},c.id));
+      for(const id of ids){const o=this.state.get<Outbox>("outbox",id)!;o.incidentIds=items.map(i=>i.id);this.state.put("outbox",id,o);}
+      if(!automated){
+        const schedule=this.state.get<import("./review.ts").ReviewSchedule>("reviewSchedules",c.id);
+        if(schedule){schedule.lastNotified=this.reviews.evidence(c).fingerprint;this.state.put("reviewSchedules",c.id,schedule);}
+      }
+      for(const i of items){
+        if(automated)i.fallback=true;else i.reviewedAt=Date.now();
+        i.notificationMissing=!ids.length;
+        i.notificationIds=[...(i.notificationIds??[]),...ids];this.state.put("incidents",i.id,i);
+      }
+    });
+  }
   completeJob(id: string, text: string, error?: string): void {
     const job = this.job(id);
     if (job.status === "completed" || job.status === "failed") return;
     if (job.status !== "in_progress") throw new Error("Job is not in progress");
     this.state.transaction(() => {
+      if (error) {
+        error=safeCause(error);
+        const c=this.state.get<Conversation>("conversations",job.conversationId)!;
+        if(job.kind==="incident") {
+          const items=this.incidents.selected(job);
+          for(const i of items){i.reviewFailure=error;this.state.put("incidents",i.id,i);}
+          const fresh=items.filter(i=>!i.fallback);
+          if(fresh.length) this.incidentNotice(job,fresh,"blocked", "The orchestrator could not explain this incident. "+causeText(error)+" The incident remains recorded for a later authorized turn; no failed operation was replayed.",true);
+          text="";
+        } else {
+          const i=this.incidents.record(c,{source:"turn",sourceId:job.id+":"+(job.generation??0),kind:"failure",cause:error,taskId:job.taskId,workerId:job.workerId});
+          // The synchronous request must terminate honestly even when its agent cannot run.
+          // Background failures first go to an orchestrator notification turn.
+          text=job.kind==="chat" ? noticeText("failure",causeText(error)+" The incident is retained for the orchestrator; no action was retried.",[i],true) : "";
+          if(job.kind==="chat"){i.fallback=true;this.state.put("incidents",i.id,i);}
+        }
+      } else if(job.kind==="incident") {
+        const items=this.incidents.selected(job);
+        if(text.trim() && text.trim()!=="[NO_UPDATE]" && items.length) this.incidentNotice(job,items,items.every(i=>i.kind==="recovered")?"recovered":items.some(i=>i.kind==="blocked")?"blocked":"failure",text);
+        else for(const i of items){i.reviewedAt=Date.now();this.state.put("incidents",i.id,i);}
+        text=""; // The single correlated notice was queued above.
+      }
+      if(!error && job.kind!=="incident" && (job.recoveryAttempts??0)>0){
+        const c=this.state.get<Conversation>("conversations",job.conversationId)!;
+        this.incidents.record(c,{source:"turn",sourceId:job.id+":"+(job.generation??0)+":recovered",kind:"recovered",cause:"turn_recovered",taskId:job.taskId});
+      }
       if (job.kind === "review") text = this.reviews.finish(job, text, error);
       job.text = text;
       job.status = error ? "failed" : "completed";
       job.error = error;
       this.state.put("jobs", id, job);
-      if (job.kind !== "chat" && text) {
-        if (job.taskId) this.reportTask(job.taskId, text, undefined, job.kind === "review");
+      if (job.kind !== "chat" && job.kind !== "incident" && text) {
+        if (job.taskId && this.state.get<string>("jobTaskReport",job.id)!==text) this.reportTask(job.taskId, text, undefined, job.kind === "review");
         const conversation = this.state.get<Conversation>(
           "conversations",
           job.conversationId,
@@ -1015,7 +1100,7 @@ export class Runtime implements ChatService {
     body: Record<string, unknown>,
     conversationId?: string,
     reviewNotification = false,
-  ): void {
+  ): string {
     const id = randomUUID();
     const item: Outbox = {
       id,
@@ -1032,15 +1117,17 @@ export class Runtime implements ChatService {
         comment: `${body.comment}\n\n<!-- codepat:${id} -->`,
       };
     this.state.put("outbox", item.id, item);
+    return id;
   }
   reportTask(id: string, comment: string, status?: string, reviewNotification = false): void {
+    const tracked=[...new Set(this.state.all<Worker>("workers").filter(w=>w.taskId===id).map(w=>w.conversationId))];
     this.outbox(
       `/tasks/${encodeURIComponent(id)}/events`,
       {
         comment,
         ...(status ? { status } : {}),
       },
-      this.state.get<string>("taskConversations", id),
+      this.state.get<string>("taskConversations", id) ?? (tracked.length===1 ? tracked[0] : undefined),
       reviewNotification,
     );
   }
@@ -1219,6 +1306,7 @@ export class Runtime implements ChatService {
       this.pollError = undefined;
     } catch (error) {
       this.pollError = String(error);
+      this.captureIncidents();
     }
   }
   taskHasUnfinishedWork(taskId: string): boolean {
@@ -1308,6 +1396,13 @@ export class Runtime implements ChatService {
         const conversation = item.conversationId
           ? this.state.get<Conversation>("conversations", item.conversationId)
           : undefined;
+        if(item.incidentIds?.length && (!conversation || item.incidentIds.some(id=>{
+          const incident=this.state.get<Incident>("incidents",id);
+          return !incident || !this.incidents.owns(incident,conversation);
+        }))){
+          item.status="failed";item.lastError="Incident destination scope changed; no send attempted";
+          this.state.put("outbox",item.id,item);continue;
+        }
         const headers = conversation ? this.contextHeaders(conversation) : {};
         if (item.path.startsWith("/chat-conversations/")) {
           if (!conversation) throw new Error("Chat conversation missing");
@@ -1356,6 +1451,7 @@ export class Runtime implements ChatService {
         item.lastError = undefined;
         item.retryAt = undefined;
       } catch (error) {
+        item.httpStatus=error instanceof ApiError ? error.status : undefined;
         if (item.status === "sending")
           item.status =
             error instanceof ApiError && error.status === 429
@@ -1452,6 +1548,16 @@ export class Runtime implements ChatService {
       return { ok: true };
     }
     if (job.status !== "in_progress") throw new Error("Job is not active");
+    if (job.kind === "incident" && !["progress","thread"].includes(action)) throw new Error("Incident notification turns cannot mutate or retry underlying work");
+    if (action === "incident-report") {
+      const c=this.state.get<Conversation>("conversations",job.conversationId)!;
+      const item=this.state.get<Incident>("incidents",textField(body,"incidentId"));
+      if(!item || !this.incidents.owns(item,c)) throw new Error("Incident not owned by this conversation");
+      const kind=textField(body,"kind");
+      if(!["failure","blocked","recovered"].includes(kind)) throw new Error("Invalid notice kind");
+      if(!item.reviewedAt) this.incidentNotice(job,[item],kind as NoticeKind,textField(body,"text"));
+      return {ok:true,notificationIds:this.state.get<Incident>("incidents",item.id)?.notificationIds};
+    }
     if (action === "progress") {
       if (Object.keys(body).some(key => !["jobId", "items"].includes(key))) throw new Error("Unsupported progress arguments");
       this.recordProgress(job.id, body.items);
@@ -1487,7 +1593,7 @@ export class Runtime implements ChatService {
     }
     if (job.kind === "review" && ["start", "recover-chat", "instances", "task-report"].includes(action)) throw new Error("Periodic reviews cannot create work, override recovery approval or post task transitions");
     if (action === "thread") {
-      if (job.kind === "review") return { ok: true }; // Fresh bounded review context must not replace the user thread.
+      if (["review","incident"].includes(job.kind)) return { ok: true }; // Fresh bounded review context must not replace the user thread.
       this.state.put(
         "threads",
         job.conversationId,
@@ -1501,7 +1607,7 @@ export class Runtime implements ChatService {
       if (Object.keys(body).some(key => !allowed.includes(key)))
         throw new Error("Unsupported contact arguments; identity and credentials come from the active request");
       const conversation = this.projectConversation(job);
-      const scope = { userId: conversation.owner, organizationId: textField(conversation.metadata, "sokosumi_organization_id") };
+      const scope = { userId: conversation.owner, organizationId: textField(conversation.metadata, "sokosumi_organization_id"), conversationId: conversation.id };
       if (action === "contacts") return this.contacts.lookup(scope, textField(body, "query"));
       const key = textField(body, "key");
       if (action === "dm-status") return this.contacts.get(scope, key);
@@ -1564,11 +1670,14 @@ export class Runtime implements ChatService {
         throw new Error(
           "Task still has unfinished workers; report progress with RUNNING instead",
         );
+      const content=textField(body,"text");
+      const label=status==="FAILED" ? "failure" : ["INPUT_REQUIRED","APPROVAL_REQUIRED","AWAITING_EXTERNAL"].includes(status??"") ? "blocked" : undefined;
       this.reportTask(
         job.taskId,
-        textField(body, "text"),
+        label ? noticeText(label,content,[{taskId:job.taskId}]) : content,
         status === task.status ? undefined : status,
       );
+      this.state.put("jobTaskReport",job.id,textField(body,"text"));
       return { ok: true };
     }
     const worker = this.state.get<Worker>(

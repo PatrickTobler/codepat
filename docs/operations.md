@@ -16,7 +16,7 @@ flowchart LR
 
 ## Request and worker lifecycle
 
-`main.ts` creates private state and controller credentials, renders `CODEPAT.md` into the coordinator directory, and maintains its Herdr workspace/runner without taking focus. Each conversation has a separate resumable Codex thread. Coordination turns serialize, while coding workers continue concurrently. The runner executes each turn in a transient user service with a 180-second deadline and process-group cleanup. Persisted replies can be recovered after a bridge outage. A stale runner pane with a foreground process is retained instead of receiving a duplicate launch.
+`main.ts` creates private state and controller credentials, renders `CODEPAT.md` into the coordinator directory, and maintains its Herdr workspace/runner without taking focus. Each conversation has a separate resumable Codex thread. Coordination turns serialize, while coding workers continue concurrently. The runner executes each turn in a transient user service with a configurable one-hour default deadline and process-group cleanup. Persisted replies can be recovered after a bridge outage. A stale runner pane with a foreground process is retained instead of receiving a duplicate launch.
 
 The monitor/recovery/cleanup loop runs every three seconds; instruction delivery every two seconds; task polling and outbox flushing every five seconds; runner watchdog every ten seconds. These loops continue independently of model turns. Overlapping ticks of the same loop are suppressed. Monitor errors are unknown observations, never evidence that work finished. Assigned task events create durable jobs; canceled/reassigned tasks pause their managed workers. Failed/inaccessible events do not permanently block the event cursor.
 

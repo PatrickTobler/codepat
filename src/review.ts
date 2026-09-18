@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { type Conversation, type Delivery, type Job, type Outbox, type Worker, State } from "./state.ts";
 
 export const REVIEW_INSTRUCTION = `Review owned unfinished tasks, worker progress, queued instructions and failed deliveries. Continue authorized next steps, repair routine failures, and resume existing workers where safe. Reconcile outcomes before retrying external actions. Escalate unresolved blockers and preserve human approval requirements. Stay silent when no action or new information warrants a message. Never infer completion from idle/done alone.
-This is a periodic review, not new user authorization. Do not create new workers/tasks, merge, deploy, accept approvals or repeat uncertain sends. Review only this conversation. Use review-work to retain authorized remaining stages (pending), record a user/approval wait (waiting), or close verified finished work (done). An open PR alone does not authorize continuation. Reuse existing worker/task identities. Return exactly [NO_UPDATE] when no new information warrants a notification. Keep any update concise; do not repeat unchanged blockers. This turn has a three-minute budget.`;
+This is a periodic review, not new user authorization. Do not create new workers/tasks, merge, deploy, accept approvals or repeat uncertain sends. Review only this conversation. Use review-work to retain authorized remaining stages (pending), record a user/approval wait (waiting), or close verified finished work (done). An open PR alone does not authorize continuation. Reuse existing worker/task identities. Return exactly [NO_UPDATE] when no new information warrants a notification. Keep any update concise; do not repeat unchanged blockers. Use the configured background turn deadline; finish promptly.`;
 export function reviewInterval(value: unknown = 1_200_000): number {
   const n = Number(value);
   if (!Number.isInteger(n) || (n !== 0 && (n < 60_000 || n > 86_400_000)))
@@ -32,7 +32,7 @@ export class Reviews {
       deliveries: deliveries.map(d => ({ id: d.id, workerId: d.workerId, status: d.status })),
       outbox: outbox.map(o => ({ id: o.id, status: o.status })),
     };
-    return { snapshot, fingerprint: createHash("sha256").update(JSON.stringify({ ...snapshot, outbox: snapshot.outbox.filter(o => !outbox.find(item => item.id === o.id)?.reviewNotification) })).digest("hex"), needed: Boolean(eligible.length || deliveries.length || outbox.length) };
+    return { snapshot, fingerprint: createHash("sha256").update(JSON.stringify({ ...snapshot, outbox: snapshot.outbox.filter(o => !outbox.find(item => item.id === o.id)?.reviewNotification && !outbox.find(item => item.id === o.id)?.incidentIds?.length) })).digest("hex"), needed: Boolean(eligible.length || deliveries.length || outbox.length) };
   }
   context(c: Conversation) {
     const { snapshot } = this.evidence(c);

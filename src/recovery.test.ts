@@ -66,7 +66,8 @@ test("started or legacy turns never replay automatically and begin-turn lost ack
   await assert.rejects(f.runtime.control("begin-turn", { jobId: f.job.id, runnerId: "old" }));
   reconcileDeadTurn(f.runtime, f.dir, f.job.id, dead);
   assert.equal(f.runtime.job(f.job.id).error, "recovery_required");
-  assert.equal(f.runtime.nextJob("replacement", 1), null);
+  const notice=f.runtime.nextJob("replacement",1)!;assert.equal(notice.job.kind,"incident");
+  f.runtime.completeJob(notice.job.id,"[NO_UPDATE]");
   assert.equal(f.state.all("outbox").length, 0);
   const legacy = f.runtime.createResponse("requester", f.c.id, "Legacy", "legacy"); f.runtime.nextJob("legacy");
   reconcileDeadTurn(f.runtime, f.dir, legacy.id, dead);
@@ -216,7 +217,7 @@ test("terminal provider diagnosis survives runner death without replaying the tu
   assert.equal(reconcileDeadTurn(f.runtime,f.dir,f.job.id,dead),true);
   assert.equal(f.runtime.job(f.job.id).status,"failed");
   assert.equal(f.runtime.job(f.job.id).error,"provider_policy");
-  assert.equal(f.runtime.nextJob("replacement",1),null);
+  assert.equal(f.runtime.nextJob("replacement",1)?.job.kind,"incident");
   assert.equal(f.state.all("workers").length,0);
   assert.equal(f.state.all("deliveries").length,0);
 });
@@ -227,5 +228,5 @@ test("unrecognized persisted diagnostic cannot become user text or authorize ret
   reconcileDeadTurn(f.runtime,f.dir,f.job.id,dead);
   assert.equal(f.runtime.job(f.job.id).error,"recovery_required");
   assert.doesNotMatch(JSON.stringify(f.runtime.job(f.job.id)),/private-injected-body/);
-  assert.equal(f.runtime.nextJob("replacement",1),null);
+  assert.equal(f.runtime.nextJob("replacement",1)?.job.kind,"incident");
 });

@@ -143,7 +143,11 @@ test("failed periodic notification does not cause a notification feedback loop",
   const o = f.state.all<any>("outbox")[0]; assert.equal(o.reviewNotification, true);
   f.state.put("outbox", o.id, { ...o, status: "failed" });
   f.runtime.reviews.schedule(Date.now() + 1_200_001); const j2 = f.runtime.nextJob("runner", 1)!.job;
-  f.runtime.completeJob(j2.id, "Same blocker, notification failed"); assert.equal(f.state.all("outbox").length, 1);
+  assert.equal(j2.kind, "incident");
+  f.runtime.completeJob(j2.id, "The earlier update was rejected; no underlying action was retried."); assert.equal(f.state.all("outbox").length, 2);
+  const j3=f.runtime.nextJob("runner",1)!.job;
+  assert.equal(j3.kind,"review");
+  f.runtime.completeJob(j3.id,"Same blocker");assert.equal(f.state.all("outbox").length,2);
 });
 test("unresolved delivery alone is actionable, but unscoped outbox cannot leak to a review", t => {
   const f = fixture(t); f.worker.state = "completed"; f.add();

@@ -6,7 +6,8 @@ import { DatabaseSync } from "node:sqlite";
 export interface Job {
   id: string;
   conversationId: string;
-  kind: "chat" | "task" | "worker" | "review";
+  kind: "chat" | "task" | "worker" | "review" | "incident";
+  incidentIds?: string[];
   reviewOwner?: string;
   reviewOrganization?: string;
   reviewFingerprint?: string;
@@ -67,6 +68,8 @@ export interface Delivery {
   createdAt: number;
 }
 export interface Outbox {
+  httpStatus?: number;
+  incidentIds?: string[];
   reviewNotification?: boolean;
   id: string;
   path: string;
