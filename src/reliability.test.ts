@@ -96,7 +96,7 @@ test("missing worker resumes same worktree and task with reconciled instruction 
     f.state.put("meta", "workspace", "w1");
     f.runtime.queueInstruction(w, "add a regression test");
     f.runtime.api = async () => ({
-      data: { assigneeId: "codepat", status: "READY" },
+      data: { assigneeId: "codepat", projectId: null, status: "READY" },
     });
     await f.runtime.recoverWorkers();
     const saved = f.state.get<Worker>("workers", w.id)!;

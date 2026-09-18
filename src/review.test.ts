@@ -176,7 +176,7 @@ test("safe continuation preserves worker/task and queued instruction cannot be d
   f.runtime.config.coworkerId = "coworker-example";
   f.runtime.herdr.agents = async () => [{ pane_id: f.worker.paneId!, name: f.worker.name, cwd: f.worker.worktree, agent_status: "idle" }];
   let reads = 0;
-  f.runtime.api = async (_path, method) => { assert.ok(!method || method === "GET"); reads++; return { data: { id: f.worker.taskId, ownerId: f.c.owner, organizationId: "organization-a", assigneeId: "coworker-example", status: "RUNNING" } }; };
+  f.runtime.api = async (_path, method) => { assert.ok(!method || method === "GET"); reads++; return { data: { id: f.worker.taskId, ownerId: f.c.owner, organizationId: "organization-a", assigneeId: "coworker-example", projectId: null, status: "RUNNING" } }; };
   f.due(); const j = f.runtime.nextJob("runner", 1)!.job;
   await f.runtime.control("resume", { jobId: j.id, workerId: f.worker.id, text: "Continue the already authorized remaining checks" });
   assert.ok(reads >= 2); assert.equal(f.state.all("workers").length, 1); assert.equal(f.state.all("deliveries").length, 1);
@@ -188,7 +188,7 @@ test("live task owner/organization and approval status are revalidated before co
   const f = fixture(t); f.worker.state = "idle"; f.worker.taskId = "task-example"; f.add();
   f.runtime.config.coworkerId = "coworker-example"; f.due(); const j = f.runtime.nextJob("runner", 1)!.job;
   for (const extra of [{ ownerId: "other-owner" }, { organizationId: "other-org" }, { status: "APPROVAL_REQUIRED" }]) {
-    f.runtime.api = async () => ({ data: { ownerId: f.c.owner, organizationId: "organization-a", assigneeId: "coworker-example", status: "RUNNING", ...extra } });
+    f.runtime.api = async () => ({ data: { ownerId: f.c.owner, organizationId: "organization-a", assigneeId: "coworker-example", projectId: null, status: "RUNNING", ...extra } });
     await assert.rejects(f.runtime.control("resume", { jobId: j.id, workerId: f.worker.id, text: "Continue" }));
   }
   assert.equal(f.state.all("deliveries").length, 0);

@@ -1,6 +1,6 @@
 # Sokosumi projects and task reassignment
 
-Verified against the public [API reference](https://api.sokosumi.com/) and [live v1 OpenAPI](https://api.sokosumi.com/v1/openapi.json) on 2026-09-17. The docs root advertises `/v1/openapi.json`. No authenticated production task/project data is included here.
+Contract rechecked on 2026-09-18 against the public [API reference](https://api.sokosumi.com/) and [live v1 OpenAPI](https://api.sokosumi.com/v1/openapi.json).  The docs root advertises `/v1/openapi.json`. No authenticated production task/project data is included here.
 
 | Operation | Contract |
 | --- | --- |
@@ -32,6 +32,27 @@ Inspect names, briefings and purpose before choosing an ID. Sokosumi development
 Selection is validated before reserving a new worker, creating its task, preparing a worktree or launching an agent. A closed/closing project is rejected. Every create includes the selected `projectId`; if the upstream response drops or changes it, CodePat retains the returned task ID but does not launch. Reconcile that task instead of creating a duplicate. A reserved operation retried with a different project fails explicitly. Existing task starts read ownership, organization, assignment and project from the task; an explicit conflicting project is rejected. Follow-ups keep the same task and worker.
 
 Read failures are safe to retry explicitly. Coordinator reads do not retry automatically; a failed inventory aborts creation. A task POST has no upstream idempotency guarantee: an ambiguous create reserves the worker and is not replayed. Stable operation keys refer to the same dispatch within the same job. Inspect existing owned workers on subsequent turns before starting another operation.
+
+## Audit tracked assignments before a backfill
+
+Within an active coordinator turn:
+
+```sh
+node src/cli.ts task-projects
+node src/cli.ts task-projects --repo /absolute/app-repository --project <verified-development-project-uuid>
+```
+
+This read-only inventory derives owner/organization from the active job, includes only that owner's tracked tasks in that workspace, and groups workers/reviewers sharing a task into one row. It cannot read arbitrary task IDs or accept identity overrides. Repository aliases are supported; the expected-project comparison requires an explicit repository filter so unrelated repositories are not implicitly targeted. Worker reporting credentials cannot invoke it.
+
+Each row separates cached worker assignments from an authenticated live task read, checks returned owner/workspace identity, and reports accessible, closed, inaccessible or unverified project details. A missing cached field means unknown, never proof of live null. An omitted/malformed remote project field is unverified; only explicit null proves unassigned. Per-task failures are sanitized and retained alongside successful rows. Project pagination failures cannot become a complete inventory. `complete` means the inventory reads were verified, not that all assignments are correct: inspect `expectedMatch`, `projectState` and `cacheState`. It is a sequence of observations, not an atomic snapshot.
+
+The operation neither mutates caches nor backfills tasks. This preserves an unconfirmed creation's intended project and makes disagreement between shared-task worker snapshots visible. Explicitly rerunning a failed read is safe; it cannot duplicate a task, worker or update. Reconcile target purpose with the requester before moving unrelated repositories; preserve deliberately selected projects.
+
+The original launcher omitted `projectId`. Current new-chat creation already enforces explicit validated selection; deploying that enforcement does not repair legacy tasks. Existing task intake preserves the current assignment rather than guessing a project. Follow-ups now recheck requester organization and live ownership, and require an explicit valid remote project field **before** superseding queued completion reports or refreshing cached selection. Unknown legacy organization or an unconfirmed creation mismatch fails closed for reconciliation.
+
+Use the owner-authenticated operation below for each confirmed misplaced task, then rerun the inventory. A fresh worktree without owner configuration does not prove the running installation lacks it: check only the documented private configuration location/account registry, without printing credentials. If owner access is unavailable, retain the outstanding movement request and report it as blocked; do not mark the whole task complete for shipping selection support.
+
+Activation requires a separately authorized release rollout of this source and updated coordinator instructions. The command is not available in an older deployed CLI merely because these files are published. Run project checks on the pinned release and follow [recovery rollout guidance](recovery.md), retaining current state and receipts. No production task or synthetic external request is required to test this read-only feature.
 
 ## Reassign with the task owner's credential
 
