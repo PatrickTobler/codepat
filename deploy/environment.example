@@ -10,3 +10,12 @@ CODEPAT_PORT=3210
 # CODEPAT_REPOSITORIES_JSON={"example":"/absolute/path/to/example"}
 # CODEPAT_WORKER_IDLE_MS=900000
 # HERDR_SOCKET_PATH=/absolute/path/to/herdr.sock
+
+# Optional native-contact directory access registry (private, service-owned, mode 600).
+# CODEPAT_CONTACT_ACCOUNTS_FILE=/absolute/private/contact-accounts.json
+
+# Chat turns default to 10 minutes; whole seconds from 60000 to 3600000 ms.
+CODEPAT_CHAT_TIMEOUT_MS=600000
+
+# Periodic AI review: default 20 minutes; 0 disables
+CODEPAT_REVIEW_INTERVAL_MS=1200000

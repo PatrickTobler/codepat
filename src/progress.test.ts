@@ -177,3 +177,17 @@ test("a real worker reporting scope cannot inject progress, and recovery retains
   assert.ok(wire.indexOf("Checking files") < wire.indexOf("response.failed"));
   assert.equal(f.runtime.authorizeControl(f.token, "progress", { jobId: f.job.id }), false);
 });
+
+test("recovered attempts reject old SSE cursors and old progress credentials", async t => {
+  const f = await httpFixture(t);
+  f.runtime.recordProgress(f.job.id, [{key:"0:item",kind:"activity",text:"Checking"}]);
+  f.runtime.completeJob(f.job.id, "Interrupted", "recovery_required");
+  f.runtime.requeueChat(f.job.id, "Synthetic reconciliation; no external actions");
+  const next = f.runtime.nextJob("replacement", 1)!;
+  assert.equal(f.runtime.authorizeControl(f.token, "progress", {jobId:f.job.id}), false);
+  const old = await fetch(`${f.base}/v1/responses/${f.job.id}?stream=true`, {headers:{...f.headers,"Last-Event-ID":`${f.job.id}:2`}});
+  assert.equal(old.status,400);
+  const response = await fetch(`${f.base}/v1/responses/${f.job.id}?stream=true`, {headers:f.headers});
+  const stream = reader(response); assert.equal((await stream.next()).id, `${f.job.id}:g1:0`);
+  await stream.cancel(); assert.equal(next.job.id,f.job.id);
+});

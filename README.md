@@ -32,8 +32,13 @@ For a real host, follow [setup](docs/setup.md) in order: Linux/systemd and Herdr
 | `src/runtime.ts`, `src/state.ts` | Durable jobs, task intake, worker operations, delivery/recovery/lifecycle |
 | `src/main.ts`, `src/runner.ts` | Independent monitor loops, Herdr runner watchdog, supervised Codex turns |
 | `src/herdr.ts`, `src/repository.ts` | Herdr CLI adapter and isolated worktree preparation |
+| `src/contacts.ts` | Scoped directory lookup, verified coworker Directs and durable send recovery |
 | `src/projects.ts` | Paginated project access checks and owner task reassignment |
 | `src/register.ts`, `src/install.ts`, `deploy/` | Explicit registration/install actions and sanitized templates |
 | `CODEPAT.md` | Coordinator operating prompt, rendered into its private runtime directory |
 
-[Live progress streaming](docs/streaming.md) covers safe event selection, replay and Sokosumi compatibility. [Architecture and operations](docs/operations.md) covers monitoring, steering, results, cleanup, recovery, trust and troubleshooting. [Projects](docs/projects.md) records the live API/auth contract and commands. [Verification](docs/verification.md) separates automated evidence from integration prerequisites. [NOTICE](NOTICE) and [LICENSE](LICENSE) preserve upstream attribution and terms.
+[Live progress streaming](docs/streaming.md) covers safe event selection, replay and Sokosumi compatibility.
+
+[Native contact tools](docs/contacts.md) covers directory access, standing coordination preferences and durable sends. [Chat deadlines and recovery](docs/recovery.md) covers timeout classification, safe retry boundaries and reboot preparation. [Architecture and operations](docs/operations.md) covers monitoring, steering, results, cleanup, recovery, trust and troubleshooting. [Projects](docs/projects.md) records the live API/auth contract and commands. [Verification](docs/verification.md) separates automated evidence from integration prerequisites. [NOTICE](NOTICE) and [LICENSE](LICENSE) preserve upstream attribution and terms.
+
+Periodic AI review is configurable and defaults to twenty minutes for scoped unfinished work. See [scheduling, silence and activation](docs/periodic-review.md).

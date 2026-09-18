@@ -15,6 +15,7 @@ import {
 } from "./attachments.ts";
 
 export interface ChatResponse {
+  generation?: number;
   id: string;
   conversationId: string;
   status: "queued" | "in_progress" | "completed" | "failed";
@@ -209,12 +210,14 @@ async function writeStream(res: ServerResponse, data: string): Promise<void> {
 }
 
 async function streamResponse(req: IncomingMessage, res: ServerResponse, service: ChatService, id: string, signal: AbortSignal) {
+  const generation = service.getResponse(id)?.generation ?? 0;
+  const cursorId = generation ? `${id}:g${generation}` : id;
   const cursor = req.headers["last-event-id"];
   let after = -1;
   if (cursor !== undefined) {
-    if (typeof cursor !== "string" || !cursor.startsWith(`${id}:`) || !/^\d+$/.test(cursor.slice(id.length + 1)))
+    if (typeof cursor !== "string" || !cursor.startsWith(`${cursorId}:`) || !/^\d+$/.test(cursor.slice(cursorId.length + 1)))
       throw new HttpError(400, "Last-Event-ID must belong to this response");
-    after = Number(cursor.slice(id.length + 1));
+    after = Number(cursor.slice(cursorId.length + 1));
     const job = service.getResponse(id)!;
     const maximum = (service.getProgress?.(id).length ?? 0) * 2 +
       (["completed", "failed"].includes(job.status) ? 2 : 0);
@@ -223,7 +226,7 @@ async function streamResponse(req: IncomingMessage, res: ServerResponse, service
   res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive", "X-Accel-Buffering": "no" });
   const emit = async (sequence: number, type: string, value: Record<string, unknown>) => {
     if (sequence <= after) return;
-    await writeStream(res, `id: ${id}:${sequence}\nevent: ${type}\ndata: ${JSON.stringify({ type, sequence_number: sequence, ...value })}\n\n`);
+    await writeStream(res, `id: ${cursorId}:${sequence}\nevent: ${type}\ndata: ${JSON.stringify({ type, sequence_number: sequence, ...value })}\n\n`);
     after = sequence;
   };
   const initial = service.getResponse(id)!;
@@ -233,6 +236,7 @@ async function streamResponse(req: IncomingMessage, res: ServerResponse, service
   if (!service.getProgress) await service.waitResponse(id, signal);
   while (!signal.aborted) {
     const job = service.getResponse(id)!;
+    if ((job.generation ?? 0) !== generation) { res.end(); return; }
     const progress = service.getProgress?.(id) ?? [];
     for (let i = 0; i < progress.length; i++) {
       const item = progress[i];

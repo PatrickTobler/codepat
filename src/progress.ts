@@ -1,4 +1,5 @@
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+import { existsSync, readFileSync, renameSync, writeFileSync, openSync, fsyncSync, closeSync } from "node:fs";
 
 export const MAX_PROGRESS = 128;
 export interface Progress { key: string; kind: "commentary" | "summary" | "activity"; text: string }
@@ -77,6 +78,10 @@ export class ProgressJournal {
     if (this.items.some(old => old.key === item.key) || this.items.length >= MAX_PROGRESS) return;
     this.items.push(item);
     writeFileSync(`${this.path}.tmp`, JSON.stringify(this.items), { mode: 0o600 });
+    const file = openSync(`${this.path}.tmp`, "r");
+    try { fsyncSync(file); } finally { closeSync(file); }
     renameSync(`${this.path}.tmp`, this.path);
+    const directory = openSync(dirname(this.path), "r");
+    try { fsyncSync(directory); } finally { closeSync(directory); }
   }
 }
