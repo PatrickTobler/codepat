@@ -129,10 +129,9 @@ export class Runtime implements ChatService {
     if (scope.kind === "worker") {
       const worker = this.state.get<Worker>("workers", scope.id);
       return (
-        (action === "worker-result" || action === "worker-approve-routine") &&
+        action === "worker-result" &&
         body.workerId === scope.id &&
-        worker?.generation === scope.generation &&
-        (action !== "worker-approve-routine" || typeof body.evidence === "object")
+        worker?.generation === scope.generation
       );
     }
     return (
@@ -371,7 +370,7 @@ export class Runtime implements ChatService {
         );
       this.queueInstruction(
         worker,
-        `You are a coding worker managed by CodePat. Work only in ${worktree}. Follow its repository instructions. Scope: ${prompt}\n\n${worker.setupInstructions ?? ""}\n\nSupplied attachment paths in this request may be read as input; keep edits in your worktree.\n\nOther workers run concurrently in separate worktrees. Preserve their work. Finish with a verified result and report it using: node ${JSON.stringify(this.config.cliPath)} worker-result ${id} --file /absolute/path/to/result.md\nThe bridge appends the scoped reporting credential for each instruction. Use that credential for the result command. Describe tests, changed files, blockers, and branch. CodePat is your only coordinator. Do not merge, deploy, or message users unless the task explicitly authorizes it. Routine approval dialogs covered by this task may be handled through CodePat's inspected, worker-scoped approval operation; do not use a global approval mode. Ask for a decision when the action is consequential or outside this task. Subsequent CodePat instructions may arrive while you work.`,
+        `You are a coding worker managed by CodePat. Work only in ${worktree}. Follow its repository instructions. Scope: ${prompt}\n\n${worker.setupInstructions ?? ""}\n\nSupplied attachment paths in this request may be read as input; keep edits in your worktree.\n\nOther workers run concurrently in separate worktrees. Preserve their work. Finish with a verified result and report it using: node ${JSON.stringify(this.config.cliPath)} worker-result ${id} --file /absolute/path/to/result.md\nThe bridge appends the scoped reporting credential for each instruction. Use that credential for the result command. Describe tests, changed files, blockers, and branch. CodePat is your only coordinator. Do not merge, deploy, or message users unless the task explicitly authorizes it. Never approve interactive permission dialogs yourself; only the coordinator's authenticated owner-scoped operation may handle an inspected routine dialog. Ask for a decision when the action is consequential or outside this task. Subsequent CodePat instructions may arrive while you work.`,
       );
     } catch (error) {
       worker.state = "launch_failed";
@@ -1557,7 +1556,7 @@ export class Runtime implements ChatService {
           const currentConversation=item.conversationId ? this.state.get<Conversation>("conversations",item.conversationId) : undefined;
           if(!conversation || !currentConversation || conversation.owner!==currentConversation.owner || conversation.metadata.sokosumi_organization_id!==currentConversation.metadata.sokosumi_organization_id || !conversation.metadata.sokosumi_organization_id)throw new Error("Report conversation scope changed or is unknown");
           if(remote.assigneeId!==this.config.coworkerId || (remote.ownerId??remote.userId)!==conversation.owner || remote.organizationId!==conversation.metadata.sokosumi_organization_id)throw new Error("Task owner, organization or assignment changed before reporting");
-          if(remote.status===item.requestedTaskStatus)delete item.body.status;
+          if(item.commentOnly || remote.status===item.requestedTaskStatus)delete item.body.status;
           else item.body.status=item.requestedTaskStatus;
           if(this.state.get<Outbox>("outbox",item.id)?.status!=="pending")continue;
           if(item.body.status==="COMPLETED" && this.taskHasUnfinishedWork(decodeURIComponent(taskId))){
@@ -1586,7 +1585,10 @@ export class Runtime implements ChatService {
         }
         if (item.status === "sending")
           item.status =
-            error instanceof ApiError && error.status === 429
+            error instanceof ApiError && error.status === 422 && error.rejectionKind === "same_status" &&
+              item.requestedTaskStatus && typeof item.body.comment === "string"
+              ? "pending"
+              : error instanceof ApiError && error.status === 429
               ? "pending"
               : error instanceof ApiError &&
                   [400, 401, 403, 404, 422].includes(error.status)
@@ -1596,9 +1598,21 @@ export class Runtime implements ChatService {
           error instanceof ApiError && error.status === 404 && !taskId
             ? "Chat destination unavailable (thread/mention correlations are not room IDs). Results remain on the Sokosumi task; normal chat replies still work."
             : String(error);
+        if (error instanceof ApiError && error.status === 422 && error.rejectionKind === "same_status" && item.status === "pending" && item.requestedTaskStatus) {
+          // The status-bearing write was explicitly rejected as redundant. Keep
+          // the comment in the same durable receipt and retry only the safe
+          // comment-only form after a fresh scoped preflight; never replay an
+          // uncertain POST.
+          delete item.body.status;
+          item.commentOnly = true;
+          item.retryAt = Date.now();
+          item.lastError = "Status already current; comment-only delivery queued after confirmed rejection";
+        }
         item.retryAt =
           Date.now() +
           Math.min(60_000, 2000 * 2 ** Math.min(item.attempts ?? 0, 5));
+        if (error instanceof ApiError && error.status === 422 && error.rejectionKind === "same_status" && item.commentOnly)
+          item.retryAt = Date.now();
       }
       if (this.state.get<Outbox>("outbox", item.id)?.status !== "superseded")
         this.state.put("outbox", item.id, item);
@@ -1661,12 +1675,6 @@ export class Runtime implements ChatService {
         );
       });
       return { ok: true };
-    }
-    if (action === "worker-approve-routine") {
-      const worker = this.state.get<Worker>("workers", textField(body, "workerId"));
-      if (!worker) throw new Error("Unknown worker");
-      const job: Job = { id: `worker-event:${worker.id}:${worker.generation ?? 0}`, conversationId: worker.conversationId, kind: "worker", input: "routine approval", status: "in_progress", text: "", createdAt: Date.now(), generation: worker.generation };
-      return approveRoutine(this, job, worker, body.evidence, true);
     }
     const job = this.job(textField(body, "jobId"));
     if (action === "begin-turn") {
@@ -1839,11 +1847,12 @@ export class Runtime implements ChatService {
     if (!worker || !this.ownsWorker(job, worker))
       throw new Error("Worker not owned by this user");
     if (action === "worker-approve-routine") {
-      if (job.kind !== "chat") throw new Error("Routine approval is available only in an active owner chat");
+      if (!((job.kind === "chat" && job.status === "in_progress") || (job.kind === "worker" && job.workerId === worker.id)))
+        throw new Error("Routine approval requires the exact active owner chat or claimed worker event");
       if (this.workerOperations.has(worker.id)) throw new Error("Worker operation in progress");
       this.workerOperations.add(worker.id);
       try {
-        return await approveRoutine(this, job, worker, body.evidence);
+        return await approveRoutine(this, job, worker, body.evidence, job.kind === "worker");
       } finally {
         this.workerOperations.delete(worker.id);
       }
@@ -1870,7 +1879,7 @@ export class Runtime implements ChatService {
       const holds=new WorkerHolds(this.state);
       const savedHold=worker.holdId?this.state.get<import("./worker-holds.ts").WorkerHold>("workerHolds",worker.holdId):undefined;
       if(savedHold && (savedHold.owner!==c.owner || savedHold.organization!==(c.metadata.sokosumi_organization_id??"")))throw new Error("Hold scope changed");
-      if(action==="worker-hold")return {workerId:worker.id,generation:worker.generation??0,paneId:worker.paneId,approvalHold:Boolean(worker.recoveryHold),hold:savedHold,unknownProvenance:!savedHold?.actionDigest};
+      if(action==="worker-hold")return {workerId:worker.id,generation:worker.generation??0,paneId:worker.paneId,approvalHold:Boolean(worker.recoveryHold),hold:savedHold,holdGeneration:savedHold?.generation,currentGeneration:worker.generation??0,generationChanged:Boolean(savedHold && savedHold.generation!==(worker.generation??0)),unknownProvenance:!savedHold?.actionDigest};
       if(this.workerOperations.has(worker.id))throw new Error("Worker operation in progress");
       this.workerOperations.add(worker.id);
       try{
@@ -1983,13 +1992,13 @@ export class Runtime implements ChatService {
         if (worker.archivedAt)
           return {
             archived: true,
-            text: worker.result,
+            text: worker.result ?? worker.priorResult,
             worktree: worker.worktree,
             taskUrl: worker.taskUrl,
           };
         if (!worker.paneId) throw new Error("Worker has no pane");
         if (!(await this.workerAgent(worker))) {
-          if (worker.result) return { missing: true, workerId: worker.id, text: worker.result, recoveryHold: Boolean(worker.recoveryHold), worktree: worker.worktree, taskUrl: worker.taskUrl, note: "Saved result is not proof the parent task is complete; session recovery requires reconciliation." };
+          if (worker.result ?? worker.priorResult) return { missing: true, workerId: worker.id, text: worker.result ?? worker.priorResult, recoveryHold: Boolean(worker.recoveryHold), worktree: worker.worktree, taskUrl: worker.taskUrl, note: "Saved result is not proof the parent task is complete; session recovery requires reconciliation." };
           throw new Error("Worker process is missing");
         }
         return this.herdr.call([

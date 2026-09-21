@@ -45,10 +45,13 @@ test('failed predecessor is not assumed accepted; uncertain predecessor blocks l
     const b=await f.runtime.control('task-report',{jobId:f.job.id,text:'Second',status:'RUNNING'}) as {notificationId:string};
     await f.runtime.flushOutbox();
     const retry=await f.runtime.control('task-report',{jobId:f.job.id,text:'First',status:'RUNNING'}) as {ok:boolean;status:string;rejectionKind:string};
-    assert.equal(retry.ok,false);assert.equal(retry.status,outcome);
-    if(outcome==='failed'){assert.equal(retry.rejectionKind,'same_status');assert.equal(posts.length,2);assert.equal(f.state.get<Outbox>('outbox',b.notificationId)!.status,'sent');}
-    else{assert.equal(posts.length,1);assert.equal(f.state.get<Outbox>('outbox',b.notificationId)!.status,'pending');assert.match(f.state.get<Outbox>('outbox',b.notificationId)!.blockedReason!,/unresolved/);}
-    assert.equal(f.state.get<Outbox>('outbox',a.notificationId)!.status,outcome);
+    if(outcome==='failed'){
+      assert.equal(retry.ok,true);assert.equal(retry.status,'pending');assert.equal(retry.rejectionKind,'same_status');
+      await f.runtime.flushOutbox();assert.equal(posts.length,3);assert.equal(f.state.get<Outbox>('outbox',a.notificationId)!.status,'sent');
+      assert.equal(f.state.get<Outbox>('outbox',b.notificationId)!.status,'sent');
+    } else {assert.equal(retry.ok,false);assert.equal(retry.status,outcome);}
+    if(outcome==='uncertain'){assert.equal(posts.length,1);assert.equal(f.state.get<Outbox>('outbox',b.notificationId)!.status,'pending');assert.match(f.state.get<Outbox>('outbox',b.notificationId)!.blockedReason!,/unresolved/);}
+    if(outcome==='uncertain') assert.equal(f.state.get<Outbox>('outbox',a.notificationId)!.status,outcome);
   }
 });
 test('reconciliation GET/local errors never replace POST failure diagnostics',async t=>{

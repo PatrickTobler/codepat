@@ -16,6 +16,8 @@ export async function reconcileStartupNotice(r:Runtime,job:Job,id:string,e:Recor
     if((fresh.w.kind??'codex')!=='codex' || (fresh.w.generation??0)!==0 || !fresh.w.recoveryHold || fresh.w.result || !fresh.w.taskId)throw new Error('Only an unstarted Codex worker with a known startup notice is eligible');
     const deliveries=r.state.all<Delivery>('deliveries').filter(d=>d.workerId===id);
     if(deliveries.some(d=>d.status!=='queued'))throw new Error('Prior instruction outcome exists; startup notice classification is insufficient');
+    const hold=fresh.w.holdId ? r.state.get<Record<string,unknown>>('workerHolds',fresh.w.holdId) : undefined;
+    if(hold?.actionDigest)throw new Error('A command action is already recorded; startup update classification cannot discard it');
     return fresh;
   };
   check();

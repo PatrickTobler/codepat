@@ -46,15 +46,16 @@ test('denial/cancellation retires exact queued instructions and stops without re
 test('unknown provenance, legacy holds, changed action and uncertain sends fail closed',async t=>{
   const f=await fixture(t);await f.setStatus('idle');
   const decision={...f.evidence,decision:'approved',decisionReference:'human-decision'};
-  await assert.rejects(f.call('reconcile-worker-hold',decision),/Known exact action/);
-  await assert.rejects(f.call('record-worker-hold'),/exact blocked dialog/);
-  await f.setStatus('blocked');await f.call('record-worker-hold');await f.setStatus('idle');
-  await assert.rejects(f.call('reconcile-worker-hold',{...decision,actionDigest:'b'.repeat(64)}),/Known exact action/);
-  f.state.put('deliveries',f.queued.id,{...f.queued,status:'uncertain'});
-  await assert.rejects(f.call('reconcile-worker-hold',decision),/Unresolved instruction/);
-  f.state.put('workers',f.w.id,{...f.state.get<Worker>('workers',f.w.id)!,holdId:undefined});
-  await assert.rejects(f.call('reconcile-worker-hold',decision),/provenance unknown/);
-  assert.equal(f.state.get<Worker>('workers',f.w.id)!.recoveryHold,true);
+  const closed:any=await f.call('reconcile-worker-hold',{...decision,evidenceReference:'private-closed-dialog'});
+  assert.equal(closed.decision,'approved');
+  const g=await fixture(t);
+  await g.call('record-worker-hold');await g.setStatus('idle');
+  await assert.rejects(g.call('reconcile-worker-hold',{...g.evidence,actionDigest:'b'.repeat(64),decision:'approved',decisionReference:'human-decision'}),/Known exact action/);
+  g.state.put('deliveries',g.queued.id,{...g.queued,status:'uncertain'});
+  await assert.rejects(g.call('reconcile-worker-hold',{...g.evidence,decision:'approved',decisionReference:'human-decision'}),/Unresolved instruction/);
+  g.state.put('workers',g.w.id,{...g.state.get<Worker>('workers',g.w.id)!,holdId:undefined});
+  await assert.rejects(g.call('reconcile-worker-hold',{...g.evidence,decision:'approved',decisionReference:'human-decision'}),/provenance unknown/);
+  assert.equal(g.state.get<Worker>('workers',g.w.id)!.recoveryHold,true);
 });
 test('exact identity/scope and chat authority required; worker tokens cannot reconcile',async t=>{
   const f=await fixture(t);await f.call('record-worker-hold');await f.setStatus('idle');

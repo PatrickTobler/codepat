@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { State, type Conversation, type Job, type Worker } from "./state.ts";
 import { WorkerHolds } from "./worker-holds.ts";
 import { approveRoutine } from "./routine-approval.ts";
@@ -19,7 +20,7 @@ function fixture() {
   const calls: string[][] = [];
   const runtime = {
     state,
-    herdr: { call: async (args: string[]) => { calls.push(args); return {}; }, agents: async () => [{ pane_id: "pane", agent_status: "blocked", name: "worker", cwd: dir }], prompt: async () => {} },
+    herdr: { call: async (args: string[]) => { calls.push(args); return args[1] === "read" ? { text: "synthetic dialog" } : {}; }, agents: async () => [{ pane_id: "pane", agent_status: "blocked", name: "worker", cwd: dir }], prompt: async () => {} },
     workerAgent: async () => ({ pane_id: "pane", agent_status: "blocked", name: "worker", cwd: dir }),
     assertAssigned: async () => ({ ownerId: "owner", organizationId: "org", assigneeId: "coworker", status: "RUNNING" }),
     assertTaskOwner: () => {},
@@ -27,7 +28,7 @@ function fixture() {
   return { dir, state, conversation, job, worker, runtime, calls };
 }
 function evidence(digest = "a".repeat(64)) {
-  return { routine: true, category: "tests", key: "enter", actionDigest: digest, dialogFingerprint: "b".repeat(64), authorizationReference: "task request" };
+  return { routine: true, category: "tests", key: "enter", focusedKey: "enter", actionDigest: digest, dialogFingerprint: createHash("sha256").update("synthetic dialog").digest("hex"), authorizationReference: "task request" };
 }
 function recordHold(f: ReturnType<typeof fixture>, actionDigest = "a".repeat(64)) {
   const holds = new WorkerHolds(f.state);
@@ -46,17 +47,17 @@ test("routine approval requires recorded provenance and is idempotent", async ()
     recordHold(f);
     const first = await approveRoutine(f.runtime, f.job, f.worker, evidence());
     assert.equal(first.status, "accepted");
-    assert.deepEqual(f.calls, [["agent", "send-keys", "pane", "enter"]]);
+    assert.deepEqual(f.calls, [["agent", "read", "pane", "--source", "recent-unwrapped", "--lines", "80"], ["agent", "send-keys", "pane", "enter"]]);
     const second = await approveRoutine(f.runtime, f.job, f.worker, evidence());
     assert.equal(second.receiptId, first.receiptId);
-    assert.equal(f.calls.length, 1);
+    assert.equal(f.calls.length, 2);
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
 });
 test("uncertain approval is fail-closed and cannot be replayed", async () => {
   const f = fixture();
   try {
     recordHold(f);
-    f.runtime.herdr.call = async () => { throw new Error("connection lost"); };
+    f.runtime.herdr.call = async (args: string[]) => { if (args[1] === "read") return { text: "synthetic dialog" }; throw new Error("connection lost"); };
     await assert.rejects(() => approveRoutine(f.runtime, f.job, f.worker, evidence()), /uncertain/);
     await assert.rejects(() => approveRoutine(f.runtime, f.job, f.worker, evidence()), /uncertain/);
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
@@ -66,6 +67,14 @@ test("legacy boolean-only hold remains blocked", async () => {
   try { await assert.rejects(() => approveRoutine(f.runtime, f.job, f.worker, evidence()), /provenance/); }
   finally { rmSync(f.dir, { recursive: true, force: true }); }
 });
+test("changed dialog fingerprint is inspected but never approved", async () => {
+  const f = fixture();
+  try {
+    recordHold(f);
+    await assert.rejects(() => approveRoutine(f.runtime, f.job, f.worker, { ...evidence(), dialogFingerprint: "c".repeat(64) }), /dialog changed/);
+    assert.deepEqual(f.calls, [["agent", "read", "pane", "--source", "recent-unwrapped", "--lines", "80"]]);
+  } finally { rmSync(f.dir, { recursive: true, force: true }); }
+});
 test("owned worker event can use standing routine authorization without a new chat", async () => {
   const f = fixture();
   try {
@@ -73,7 +82,7 @@ test("owned worker event can use standing routine authorization without a new ch
     const eventJob = { ...f.job, id: "worker-event:worker:1", kind: "worker" as const };
     const result = await approveRoutine(f.runtime, eventJob, f.worker, evidence(), true);
     assert.equal(result.status, "accepted");
-    assert.deepEqual(f.calls, [["agent", "send-keys", "pane", "enter"]]);
+    assert.deepEqual(f.calls, [["agent", "read", "pane", "--source", "recent-unwrapped", "--lines", "80"], ["agent", "send-keys", "pane", "enter"]]);
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
 });
 test("chat-only routine approval cannot be used as a worker event and vice versa", async () => {

@@ -5,6 +5,7 @@ export interface WorkerHold {
   conversationId:string;owner:string;organization:string;createdAt:number;
   actionDigest?:string;evidenceReference?:string;recordedByJob?:string;
   decision?:'approved'|'denied'|'cancelled';decisionReference?:string;resolvedAt?:number;
+  routineApprovedAt?:number;routineApprovalReference?:string;
   retiredDeliveryIds?:string[];resolvedByJob?:string;
 }
 export class WorkerHolds {
@@ -33,7 +34,17 @@ export class WorkerHolds {
     return this.state.transaction(()=>{
       const {hold:h,evidence:e}=this.bound(w,c,input);
       const decision=textField(e,'decision'),reference=textField(e,'decisionReference');
-      if(!h.actionDigest || e.actionDigest!==h.actionDigest || !['approved','denied','cancelled'].includes(decision) || reference.length>1000)throw new Error('Known exact action and human decision evidence required');
+      const digest=textField(e,'actionDigest'), evidenceReference=textField(e,'evidenceReference');
+      if(!['approved','denied','cancelled'].includes(decision) || reference.length>1000 || !/^[a-f0-9]{64}$/.test(digest))throw new Error('Known exact action and human decision evidence required');
+      if(h.routineApprovedAt && decision!=='approved')throw new Error('Routine approval was already accepted; denial or cancellation cannot be recorded');
+      // A dialog can close before its action digest is recorded. An owner may
+      // attest the exact action and decision together while the durable hold,
+      // identity and idle/done pane are still bound by the caller. This never
+      // applies to a legacy boolean-only hold with no hold receipt.
+      if(!h.actionDigest){
+        if(!evidenceReference || evidenceReference.length>1000)throw new Error('Closed dialog needs bounded action evidence reference');
+        h.actionDigest=digest;h.evidenceReference=evidenceReference;
+      } else if(e.actionDigest!==h.actionDigest)throw new Error('Known exact action and human decision evidence required');
       if(h.resolvedAt){
         if(h.decision!==decision || h.decisionReference!==reference)throw new Error('Resolution conflicts with prior decision');
         return {ok:true,holdId:h.id,decision:h.decision,resolvedAt:h.resolvedAt};

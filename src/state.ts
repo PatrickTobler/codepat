@@ -56,6 +56,7 @@ export interface Worker {
   archiveRequestedAt?: number;
   state: string;
   result?: string;
+  priorResult?: string;
   generation?: number;
   error?: string;
   observedAt: number;
@@ -72,6 +73,7 @@ export interface Delivery {
   createdAt: number;
 }
 export interface Outbox {
+  commentOnly?: boolean;
   requestedTaskStatus?: string;
   reconciliationHttpStatus?: number;
   blockedReason?: string;

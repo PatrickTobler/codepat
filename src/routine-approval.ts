@@ -36,8 +36,9 @@ export async function approveRoutine(
   const reference = textField(evidence, "authorizationReference");
   const category = textField(evidence, "category");
   const key = textField(evidence, "key");
+  const focusedKey = textField(evidence, "focusedKey");
   const dialogFingerprint = textField(evidence, "dialogFingerprint");
-  if (evidence.routine !== true || !categories.has(category) || key !== "enter" ||
+  if (evidence.routine !== true || !categories.has(category) || key !== "enter" || focusedKey !== "enter" ||
       !digest.test(actionDigest) || !digest.test(dialogFingerprint) || !reference || reference.length > 1000)
     throw new Error("Routine approval needs a bounded authorized category, exact dialog fingerprint, and enter key");
   const hold = worker.holdId ? runtime.state.get<import("./worker-holds.ts").WorkerHold>("workerHolds", worker.holdId) : undefined;
@@ -47,12 +48,16 @@ export async function approveRoutine(
     throw new Error("Exact recorded worker-dialog provenance is required; historical or unknown holds remain blocked");
   const task = await runtime.assertAssigned(worker.taskId);
   runtime.assertTaskOwner(task, conversation);
-  const live = await runtime.workerAgent(worker);
-  if (!live || live.agent_status !== "blocked") throw new Error("The exact owned worker dialog is no longer blocked");
-  const receiptId = createHash("sha256").update(JSON.stringify([job.id, worker.id, worker.generation ?? 0, worker.paneId, actionDigest, dialogFingerprint])).digest("hex");
+  const receiptId = createHash("sha256").update(JSON.stringify([worker.id, worker.generation ?? 0, worker.paneId, actionDigest])).digest("hex");
   const prior = runtime.state.get<{status: string}>("routineApprovals", receiptId);
   if (prior?.status === "accepted") return { status: "accepted", receiptId, workerId: worker.id };
   if (prior?.status === "sending" || prior?.status === "uncertain") throw new Error("Approval outcome is uncertain; inspect before retrying");
+  const live = await runtime.workerAgent(worker);
+  if (!live || live.agent_status !== "blocked") throw new Error("The exact owned worker dialog is no longer blocked");
+  const dialog = await runtime.herdr.call(["agent", "read", worker.paneId, "--source", "recent-unwrapped", "--lines", "80"]);
+  const dialogText = typeof dialog.text === "string" ? dialog.text : JSON.stringify(dialog);
+  const observedFingerprint = createHash("sha256").update(dialogText).digest("hex");
+  if (observedFingerprint !== dialogFingerprint) throw new Error("The inspected worker dialog changed; no approval key sent");
   const current = runtime.state.get<Worker>("workers", worker.id);
   if (!current || current.paneId !== worker.paneId || current.generation !== worker.generation)
     throw new Error("Worker identity changed during approval");
@@ -63,7 +68,15 @@ export async function approveRoutine(
     runtime.state.put("routineApprovals", receiptId, { receiptId, workerId: worker.id, jobId: job.id, generation: worker.generation ?? 0, paneId: worker.paneId, actionDigest, dialogFingerprint, reference, category, status: "uncertain", at: Date.now(), error: String(error).slice(0, 500) });
     throw new Error("Approval key outcome is uncertain; inspect the exact pane before retrying");
   }
-  runtime.state.put("routineApprovals", receiptId, { receiptId, workerId: worker.id, jobId: job.id, generation: worker.generation ?? 0, paneId: worker.paneId, actionDigest, dialogFingerprint, reference, category, status: "accepted", at: Date.now() });
+  runtime.state.transaction(() => {
+    runtime.state.put("routineApprovals", receiptId, { receiptId, workerId: worker.id, jobId: job.id, generation: worker.generation ?? 0, paneId: worker.paneId, actionDigest, dialogFingerprint, reference, category, status: "accepted", at: Date.now() });
+    const approvedHold = runtime.state.get<import("./worker-holds.ts").WorkerHold>("workerHolds", worker.holdId!);
+    if (approvedHold) {
+      approvedHold.routineApprovedAt = Date.now();
+      approvedHold.routineApprovalReference = reference;
+      runtime.state.put("workerHolds", approvedHold.id, approvedHold);
+    }
+  });
   const updated = runtime.state.get<Worker>("workers", worker.id);
   if (updated && updated.paneId === worker.paneId && updated.generation === worker.generation) {
     updated.routineApproval = { receiptId, generation: worker.generation ?? 0, paneId: worker.paneId, actionDigest, status: "accepted", at: Date.now() };

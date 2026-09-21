@@ -123,7 +123,7 @@ export class LegacyContinuation {
       // Herdr also rejects a live approval/question dialog at the actual prompt boundary.
       const reportConfig=r.state.transaction(()=>{
         current.w.generation=(current.w.generation??0)+1;
-        current.w.state='working';current.w.result=undefined; // Prior result remains in the immutable reservation.
+        current.w.state='working';current.w.priorResult=current.w.result;current.w.result=undefined;
         r.state.put('workers',id,current.w);
         const path=r.scopedConfig({kind:'worker',id,generation:current.w.generation});
         g!.reportConfig=path;g!.expected=this.snapshot(current.w,current.c).digest;g!.status='sending';this.save(g!);return path;
