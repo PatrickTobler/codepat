@@ -12,6 +12,7 @@ reconcile-startup-notice <worker> --file <private-notice-evidence.json>
 continue-worker-readonly <worker> --file <private-continuation.json>
 worker-hold <worker>
 record-worker-hold|reconcile-worker-hold <worker> --file <private-evidence.json>
+worker-approve-routine <worker> --file <private-approval.json>
 incident-report <incident-id> --kind failure|blocked|recovered --file <explanation>
 review-status | review-work <worker> --state pending|waiting|done --file <note>
 recover-chat <response-id> --reconciled --file <reconciliation>
@@ -54,6 +55,7 @@ switch (action) {
   case "continue-worker-readonly":
   case "record-worker-hold":
   case "reconcile-worker-hold":
+  case "worker-approve-routine":
     body={jobId,workerId:args[0],evidence:JSON.parse(readFileSync(option("--file"),"utf8"))};break;
   case "incident-report":
     body = { jobId, incidentId: args[0], kind: option("--kind"), text: readFileSync(option("--file"), "utf8") };

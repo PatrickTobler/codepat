@@ -60,6 +60,7 @@ export interface Worker {
   error?: string;
   observedAt: number;
   createdAt: number;
+  routineApproval?: { receiptId: string; generation: number; paneId: string; actionDigest: string; status: "sending" | "accepted" | "uncertain"; at: number };
 }
 export interface Delivery {
   blockedReason?: string;

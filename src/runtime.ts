@@ -21,6 +21,7 @@ import { type Agent, type HerdrPort, paneFrom } from "./herdr.ts";
 import type { ChatService } from "./http.ts";
 import { inspectProject, pages, projectId } from "./projects.ts";
 import { prepareRepository } from "./repository.ts";
+import { approveRoutine } from "./routine-approval.ts";
 import {
   type Conversation,
   type Delivery,
@@ -145,6 +146,7 @@ export class Runtime implements ChatService {
         "worker-hold",
         "record-worker-hold",
         "reconcile-worker-hold",
+        "worker-approve-routine",
         "instances",
         "repositories",
         "progress",
@@ -368,7 +370,7 @@ export class Runtime implements ChatService {
         );
       this.queueInstruction(
         worker,
-        `You are a coding worker managed by CodePat. Work only in ${worktree}. Follow its repository instructions. Scope: ${prompt}\n\n${worker.setupInstructions ?? ""}\n\nSupplied attachment paths in this request may be read as input; keep edits in your worktree.\n\nOther workers run concurrently in separate worktrees. Preserve their work. Finish with a verified result and report it using: node ${JSON.stringify(this.config.cliPath)} worker-result ${id} --file /absolute/path/to/result.md\nThe bridge appends the scoped reporting credential for each instruction. Use that credential for the result command. Describe tests, changed files, blockers, and branch. CodePat is your only coordinator. Do not merge, deploy, or message users unless the task explicitly authorizes it. Never approve an interactive permission dialog on behalf of the user. Subsequent CodePat instructions may arrive while you work.`,
+        `You are a coding worker managed by CodePat. Work only in ${worktree}. Follow its repository instructions. Scope: ${prompt}\n\n${worker.setupInstructions ?? ""}\n\nSupplied attachment paths in this request may be read as input; keep edits in your worktree.\n\nOther workers run concurrently in separate worktrees. Preserve their work. Finish with a verified result and report it using: node ${JSON.stringify(this.config.cliPath)} worker-result ${id} --file /absolute/path/to/result.md\nThe bridge appends the scoped reporting credential for each instruction. Use that credential for the result command. Describe tests, changed files, blockers, and branch. CodePat is your only coordinator. Do not merge, deploy, or message users unless the task explicitly authorizes it. Routine approval dialogs covered by this task may be handled through CodePat's inspected, worker-scoped approval operation; do not use a global approval mode. Ask for a decision when the action is consequential or outside this task. Subsequent CodePat instructions may arrive while you work.`,
       );
     } catch (error) {
       worker.state = "launch_failed";
@@ -1829,6 +1831,16 @@ export class Runtime implements ChatService {
     );
     if (!worker || !this.ownsWorker(job, worker))
       throw new Error("Worker not owned by this user");
+    if (action === "worker-approve-routine") {
+      if (job.kind !== "chat") throw new Error("Routine approval is available only in an active owner chat");
+      if (this.workerOperations.has(worker.id)) throw new Error("Worker operation in progress");
+      this.workerOperations.add(worker.id);
+      try {
+        return await approveRoutine(this, job, worker, body.evidence);
+      } finally {
+        this.workerOperations.delete(worker.id);
+      }
+    }
     if(action==="reconcile-startup-notice"){
       if(this.workerOperations.has(worker.id))throw new Error("Worker operation in progress");
       this.workerOperations.add(worker.id);
