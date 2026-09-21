@@ -113,3 +113,55 @@ A follow-up may already have reopened a COMPLETED task before a new hold arrives
 If worker identity changes during tab creation, the returned pane reference is retained in private `orphanWorkerPanes` metadata for inspection. It is not started, adopted or closed automatically. If the tab-create response itself is lost, its identity may be unknown; inspect Herdr before any replacement attempt. The bridge cannot revoke an external call already issued before a hold appeared.
 
 Before downgrade, drain or safely retire new `incident` jobs and preserve all workerHolds, receipts, decisions and unresolved operations. An older runtime lacks these guards and can deliver queued held instructions: do NOT downgrade into runnable held queues or unresolved reconciliation state. Keep the service safely paused pending a compatible repair when those conditions cannot be met; never clear holds or restore stale SQLite to make rollback appear safe.
+
+### Quarantined legacy read-only continuation
+
+A historical boolean hold cannot be converted into a guessed old approval. A separate, one-use owner authorization can permit **new independent read-only inspection**, while retaining the original hold and every historical instruction status. This is a narrow exception for restoring the same missing worker, not a release of old actions or permission to use ordinary `send`/`resume`.
+
+An active owner chat in the exact conversation/organization uses:
+
+```sh
+node src/cli.ts worker-continuation-plan <existing-worker-id>
+node src/cli.ts continue-worker-readonly <existing-worker-id> --file /private/continuation.json
+```
+
+The plan returns `expectedSnapshot` and the exact sorted `quarantineDeliveryIds`. Supply those values in the authorization file:
+
+```json
+{
+  "key": "independent-readonly-stage-1",
+  "expectedSnapshot": "digest-from-scoped-plan",
+  "quarantineDeliveryIds": ["exact-existing-unresolved-instruction-id"],
+  "readOnly": true,
+  "noHistoricalReplay": true,
+  "authorizationReference": "reference-to-renewed-owner-instruction",
+  "sessionId": "00000000-0000-4000-8000-000000000001",
+  "sessionEvidenceReference": "/private/provider-history/exact-session.jsonl",
+  "instruction": "Verify the approved read-only copy provenance and freshness first; inspect only the authorized data. No production fallback, writes, historical retries or messages. Report remaining limitations precisely."
+}
+```
+
+Use the real saved session ID, never the example or a guessed `--last`. The runtime reads at most 64 KiB of the specified session history, under the runtime user's canonical `.codex/sessions` or `.claude/projects` root. It requires matching structured session ID and worktree metadata; transcript text is neither returned nor added to the prompt. Missing/mismatched metadata is a blocker. Preserve history and verify copy provenance; a database URL's presence does not prove an approved copy or read-only database role.
+
+The operation verifies live task owner/organization/assignment and exact worker/task/worktree/branch/pane/generation, hold and delivery snapshot after awaits. A sending instruction still in flight prevents reservation. It refuses any live agent matching the retained pane, worker name or worktree, and any non-shell process in an existing pane. It never kills a session, answers a dialog, or uses a replacement worker/task. If the pane is absent, it creates only a replacement pane for the **same** worker/session identity. An existing verified idle shell may be reused.
+
+Codex restoration uses the explicit session ID with `read-only` sandbox and `never` approvals; Claude uses the explicit ID with `plan` permission mode. These provider controls restrict local execution; they are **not proof of read-only remote database permissions or of every connected tool's behavior**. A safe database connection/read-only role or equivalent approved query path still has to be verified by the audit. Never weaken restrictions or use production fallback to make an audit or result report work. In particular, sandbox networking/reporting or plan-mode tools may be unavailable. The worker must report that limitation; the owner can inspect structured output through the existing scoped read operation if the reporting command is unavailable.
+
+A new instruction is submitted only to the verified idle/done restricted session, with an explicit no-historical-replay preamble. Herdr also refuses a live blocked dialog at submission. Generation/reporting scope changes and the new sending receipt are atomic; the previous partial result, original identity snapshot and authorization are retained privately. The original `recoveryHold` remains true and old queued/uncertain instructions retain their IDs, text and statuses. Ordinary operations remain blocked. Acceptance means prompt submission acknowledged, not model execution, audited interactions, completed task or reconciled old outcomes.
+
+Creation/start/send phases are durable. A lost external acknowledgment or restart during a phase becomes uncertain and is not retried. A verified startup still waiting for input can be inspected; repeating the identical request in `waiting` rechecks readiness without relaunching. Never replace an uncertain reservation with a new key. This deliberately provides one continuation reservation per worker; further grants or an uncertain new reservation require separate audited reconciliation, not resetting its record. A preflight block may be retried with the identical evidence after its actual prerequisite is repaired, but changed snapshots or scope require inspection rather than replacing the reservation silently.
+
+**Review gate bootstrap:** this source feature is not available in an older live bridge. Deploying the whole unreviewed PR to unblock its reviewer would bypass its gate. A live held reviewer is also ineligible for missing-session restoration. The coordinator must obtain genuine owner-led resolution of its current UI (or deliberate closure of that same session without approving unknown actions), retain its exact saved session, and arrange independent re-review under an explicitly agreed maintenance/recovery path. A human can interact with their existing agent directly; automation must not impersonate that decision or send a hidden bypass prompt. If neither a valid current UI decision nor a separately reviewed/authorized recovery path is available, report this gate dependency explicitly. Do not invent reviewer approval, claim re-review complete or launch a substitute worker.
+
+### Known startup update notices
+
+Herdr `blocked` alone does not distinguish approval, question and updater UI. Do not classify a historical hold from idle status or arbitrary terminal text. For an **unstarted Codex worker only** (generation zero, no result and no prior sent/uncertain/sending instruction), a witnessed update-menu **Skip** can be reconciled in an active owning chat:
+
+```sh
+node src/cli.ts worker-continuation-plan <existing-worker-id>
+node src/cli.ts reconcile-startup-notice <existing-worker-id> --file /private/update-skip.json
+```
+
+The evidence file contains the plan's `expectedSnapshot`, `notice: "codex_update_available"`, `decision: "skip"`, `noCommandApproved: true`, and an `evidenceReference` to the actual inspected menu/skip. The runtime verifies the exact retained agent is idle/done before and after live task ownership checks, then atomically records the non-approval classification and releases only this known startup hold. It sends no keys, update/install command, prompt or task transition. This is an owner-context attestation, not automatic UI recognition. Unknown command dialogs and historical audit holds are refused.
+
+Existing queued initial instructions are preserved; `queuedDeliveryIds` tells the coordinator to wait for those rather than replaying the prompt. If `resumeRequired` is true, use the existing scoped `resume <same-worker> --file <original-authorized-instructions>` once. If the worker already progressed to generation one/working, do not run reconciliation or resume: inspect actual progress and treat the old startup failure notification as stale. A known skipped updater does not authorize npm installation or any underlying command approval.

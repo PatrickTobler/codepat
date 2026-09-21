@@ -1,3 +1,5 @@
+import {reconcileStartupNotice} from "./startup-notice.ts";
+import {LegacyContinuation} from "./legacy-continuation.ts";
 import {WorkerHolds} from "./worker-holds.ts";
 import { apiRejection } from "./api-diagnostic.ts";
 import { Incidents, noticeText, safeCause, causeText, type Incident, type NoticeKind } from "./incidents.ts";
@@ -137,6 +139,9 @@ export class Runtime implements ChatService {
       (scope.generation ?? 0) === (this.getResponse(scope.id)?.generation ?? 0) &&
       [
         "workers",
+        "reconcile-startup-notice",
+        "worker-continuation-plan",
+        "continue-worker-readonly",
         "worker-hold",
         "record-worker-hold",
         "reconcile-worker-hold",
@@ -1824,6 +1829,20 @@ export class Runtime implements ChatService {
     );
     if (!worker || !this.ownsWorker(job, worker))
       throw new Error("Worker not owned by this user");
+    if(action==="reconcile-startup-notice"){
+      if(this.workerOperations.has(worker.id))throw new Error("Worker operation in progress");
+      this.workerOperations.add(worker.id);
+      try{return await reconcileStartupNotice(this,job,worker.id,record(body.evidence));}
+      finally{this.workerOperations.delete(worker.id);}
+    }
+    if(["worker-continuation-plan","continue-worker-readonly"].includes(action)){
+      const continuation=new LegacyContinuation(this);
+      if(action==="worker-continuation-plan")return continuation.plan(job,worker.id);
+      if(this.workerOperations.has(worker.id))throw new Error("Worker operation in progress");
+      this.workerOperations.add(worker.id);
+      try{return await continuation.run(job,worker.id,record(body.evidence));}
+      finally{this.workerOperations.delete(worker.id);}
+    }
     if (["worker-hold","record-worker-hold","reconcile-worker-hold"].includes(action)) {
       if(job.kind!=="chat")throw new Error("Hold reconciliation requires an active owner chat, not autonomous work");
       if(worker.conversationId!==job.conversationId)throw new Error("Hold requires the exact owning conversation");
