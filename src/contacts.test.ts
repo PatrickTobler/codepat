@@ -260,6 +260,8 @@ test("runtime job control derives identity and rejects overrides/cross-job acces
       assert.equal(f.runtime.authorizeControl(workerToken, action, { jobId: f.job.id }), false);
     }
     assert.equal(f.runtime.authorizeControl(workerToken, "worker-result", { workerId: "worker" }), true);
+    assert.equal(f.runtime.authorizeControl(workerToken, "worker-approve-routine", { workerId: "worker", evidence: {} }), true);
+    assert.equal(f.runtime.authorizeControl(workerToken, "worker-approve-routine", { workerId: "worker" }), false);
     server = createCodePatServer({ organizationId: scope.organizationId, controlToken: "synthetic-master", service: f.runtime,
       authorizeControl: (...args) => f.runtime.authorizeControl(...args), control: (...args) => f.runtime.control(...args) });
     await new Promise<void>(r => server!.listen(0, "127.0.0.1", r));

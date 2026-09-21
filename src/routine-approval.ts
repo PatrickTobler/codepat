@@ -20,9 +20,10 @@ export async function approveRoutine(
   job: Job,
   worker: Worker,
   input: unknown,
+  workerEvent = false,
 ): Promise<Record<string, unknown>> {
-  if (job.kind !== "chat" || job.status !== "in_progress")
-    throw new Error("Routine approval requires the active owner chat");
+  if ((!workerEvent && job.kind !== "chat") || (workerEvent && job.kind !== "worker") || job.status !== "in_progress")
+    throw new Error(workerEvent ? "Routine approval requires an owned worker event" : "Routine approval requires the active owner chat");
   const conversation = runtime.state.get<Conversation>("conversations", job.conversationId);
   const owning = runtime.state.get<Conversation>("conversations", worker.conversationId);
   if (!conversation || !owning || conversation.owner !== owning.owner ||

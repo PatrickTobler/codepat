@@ -66,3 +66,23 @@ test("legacy boolean-only hold remains blocked", async () => {
   try { await assert.rejects(() => approveRoutine(f.runtime, f.job, f.worker, evidence()), /provenance/); }
   finally { rmSync(f.dir, { recursive: true, force: true }); }
 });
+test("owned worker event can use standing routine authorization without a new chat", async () => {
+  const f = fixture();
+  try {
+    recordHold(f);
+    const eventJob = { ...f.job, id: "worker-event:worker:1", kind: "worker" as const };
+    const result = await approveRoutine(f.runtime, eventJob, f.worker, evidence(), true);
+    assert.equal(result.status, "accepted");
+    assert.deepEqual(f.calls, [["agent", "send-keys", "pane", "enter"]]);
+  } finally { rmSync(f.dir, { recursive: true, force: true }); }
+});
+test("chat-only routine approval cannot be used as a worker event and vice versa", async () => {
+  const f = fixture();
+  try {
+    recordHold(f);
+    const eventJob = { ...f.job, id: "worker-event:worker:1", kind: "worker" as const };
+    await assert.rejects(() => approveRoutine(f.runtime, eventJob, f.worker, evidence()), /active owner chat/);
+    await assert.rejects(() => approveRoutine(f.runtime, f.job, f.worker, evidence(), true), /owned worker event/);
+    assert.equal(f.calls.length, 0);
+  } finally { rmSync(f.dir, { recursive: true, force: true }); }
+});

@@ -129,9 +129,10 @@ export class Runtime implements ChatService {
     if (scope.kind === "worker") {
       const worker = this.state.get<Worker>("workers", scope.id);
       return (
-        action === "worker-result" &&
+        (action === "worker-result" || action === "worker-approve-routine") &&
         body.workerId === scope.id &&
-        worker?.generation === scope.generation
+        worker?.generation === scope.generation &&
+        (action !== "worker-approve-routine" || typeof body.evidence === "object")
       );
     }
     return (
@@ -1660,6 +1661,12 @@ export class Runtime implements ChatService {
         );
       });
       return { ok: true };
+    }
+    if (action === "worker-approve-routine") {
+      const worker = this.state.get<Worker>("workers", textField(body, "workerId"));
+      if (!worker) throw new Error("Unknown worker");
+      const job: Job = { id: `worker-event:${worker.id}:${worker.generation ?? 0}`, conversationId: worker.conversationId, kind: "worker", input: "routine approval", status: "in_progress", text: "", createdAt: Date.now(), generation: worker.generation };
+      return approveRoutine(this, job, worker, body.evidence, true);
     }
     const job = this.job(textField(body, "jobId"));
     if (action === "begin-turn") {
