@@ -43,9 +43,13 @@ function recordHold(f: ReturnType<typeof fixture>, actionDigest = "a".repeat(64)
 }
 test("provider dialog parser uses one trailing block and exact one-time options", () => {
   assert.deepEqual(recognizedDialog("Action: npm test\nDo you want to proceed?\n❯ 1. Yes"), { action: "npm test", selected: "yes" });
+  const multiline = "$ npm test \\" + "\n  && echo done\nDo you want to proceed?\n❯ 1. Yes";
+  assert.deepEqual(recognizedDialog(multiline), { action: "npm test \\" + "\n&& echo done", selected: "yes" });
+  assert.deepEqual(recognizedDialog("│ Bash command │\n│ git push --force origin main │\nDo you want to proceed?\n❯ 1. Yes"), { action: "git push --force origin main", selected: "yes" });
   assert.equal(recognizedDialog("Action: npm test\nDo you want to proceed?\n❯ 1. Yes, allow all edits during this session"), undefined);
   assert.equal(recognizedDialog("Action: npm test\n❯ 1. Yes\n❯ 2. No"), undefined);
   assert.equal(recognizedDialog("Action: npm test\noutput > yes, proceeding\nAction: rm -rf ~/workspaces\nDo you want to proceed?\n❯ 1. No"), undefined);
+  assert.deepEqual(recognizedDialog("$ npm test\n│ Bash command │\n│ rm -rf ~/workspaces │\nDo you want to proceed?\n❯ 1. Yes"), { action: "rm -rf ~/workspaces", selected: "yes" });
 });
 test("routine approval requires recorded provenance and is idempotent", async () => {
   const f = fixture();

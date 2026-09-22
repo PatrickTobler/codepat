@@ -61,6 +61,18 @@ test('Runtime.control approves only the exact one-time selected provider option'
   const stale={...gEvidence,dialogFingerprint:createHash('sha256').update('Action: npm test\noutput > yes, proceeding\nAction: rm -rf ~/workspaces\nDo you want to proceed?\n❯ 1. No').digest('hex')};
   await assert.rejects(g.runtime.control('worker-approve-routine',{jobId:g.job.id,workerId:g.w.id,evidence:stale}),/format or selected option/);
 });
+test('Runtime.control binds Claude box action and rejects stale recognized prefixes',async t=>{
+  const f=await fixture(t);const current=f.state.get<Worker>("workers",f.w.id)!;current.taskId='task';f.state.put('workers',current.id,current);const hold=f.state.get<WorkerHold>('workerHolds',current.holdId!)!;hold.taskId='task';f.state.put('workerHolds',hold.id,hold);
+  f.runtime.api=async()=>({data:{ownerId:'owner',organizationId:'org',assigneeId:'coworker',status:'RUNNING'}});
+  const box='│ Bash command │\n│ git push --force origin main │\nDo you want to proceed?\n❯ 1. Yes';
+  f.runtime.herdr.call=async(args)=>args[1]==='read'?{text:'$ npm test\n'+box}:{};
+  await assert.rejects(f.call('record-worker-hold',{...f.evidence,actionText:'npm test',dialogFingerprint:createHash('sha256').update('$ npm test\n'+box).digest('hex')}),/does not match/);
+  const g=await fixture(t);const currentG=g.state.get<Worker>("workers",g.w.id)!;currentG.taskId='task';g.state.put('workers',currentG.id,currentG);const gh=g.state.get<WorkerHold>('workerHolds',currentG.holdId!)!;gh.taskId='task';g.state.put('workerHolds',gh.id,gh);g.runtime.api=async()=>({data:{ownerId:'owner',organizationId:'org',assigneeId:'coworker',status:'RUNNING'}});g.runtime.herdr.call=async(args)=>args[1]==='read'?{text:box}:{};
+  const recordEvidence={...g.evidence,actionText:'git push --force origin main',dialogFingerprint:createHash('sha256').update(box).digest('hex')};
+  await g.call('record-worker-hold',recordEvidence);
+  const routine={...recordEvidence,routine:true,category:'tests',key:'enter',authorizationReference:'owner request'};
+  const result=await g.runtime.control('worker-approve-routine',{jobId:g.job.id,workerId:g.w.id,evidence:routine}) as {status:string};assert.equal(result.status,'accepted');
+});
 test('denial/cancellation retires exact queued instructions and stops without replaying the denied action',async t=>{
   for(const decision of ['denied','cancelled']){
     const f=await fixture(t);await f.call('record-worker-hold');await f.setStatus('done');

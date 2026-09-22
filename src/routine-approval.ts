@@ -21,22 +21,44 @@ function selectedOption(line: string): string | undefined {
 }
 export function recognizedDialog(text: string): { action: string; selected: string } | undefined {
   const lines = canonical(text).split("\n");
-  const promptIndexes = lines.flatMap((line, index) => /do you want to proceed\?\s*$/i.test(line) ? [index] : []);
-  const actionIndexes = lines.flatMap((line, index) => /^(?:action|command|request):\s*.+$/i.test(line) ? [index] : []);
-  const prompt = promptIndexes.at(-1);
-  const commandIndexes = lines.flatMap((line, index) => /^(?:[│|]\s*)?\$\s+.+$/.test(line) ? [index] : []);
-  const actionStart = [...actionIndexes, ...commandIndexes].filter(index => prompt === undefined || index <= prompt).at(-1);
-  const start = actionStart ?? prompt;
-  if (start === undefined) return undefined;
-  const block = lines.slice(start);
-  const actions = block.flatMap(line => {
-    const match = /^(?:action|command|request):\s*(.+)$/i.exec(line);
-    if (match) return [canonical(match[1])];
-    const shell = /^(?:[│|]\s*)?\$\s+(.+)$/.exec(line);
-    return shell ? [canonical(shell[1])] : [];
-  });
-  const action = actions.length === 1 ? actions[0] : undefined;
-  const selected = block.flatMap(line => { const option = selectedOption(line); return option === undefined ? [] : [option]; });
+  const prompts = lines.flatMap((line, index) => /do you want to proceed\?\s*$/i.test(line) ? [index] : []);
+  const prompt = prompts.at(-1);
+  if (prompt !== undefined && prompts.length !== 1) return undefined;
+  const boxHeaders = lines.flatMap((line, index) => /^(?:[│|]\s*)?bash command\s*(?:[│|]\s*)?$/i.test(line) ? [index] : []);
+  const boxStart = boxHeaders.filter(index => prompt === undefined || index < prompt).at(-1);
+  let action: string | undefined;
+  let block: string[];
+  if (boxStart !== undefined && prompt !== undefined) {
+    const boxLines = lines.slice(boxStart + 1, prompt);
+    if (!boxLines.length || boxLines.some(line => line.trim() && !/^[│|]/.test(line))) return undefined;
+    const content = boxLines.map(line => line.replace(/^[│|]\s?/, "").replace(/\s*[│|]\s*$/, "").trim()).filter(Boolean);
+    if (!content.length) return undefined;
+    action = canonical(content.join("\n"));
+    block = lines.slice(boxStart);
+  } else {
+    const actionIndexes = lines.flatMap((line, index) => /^(?:action|command|request):\s*.+$/i.test(line) ? [index] : []);
+    const commandIndexes = lines.flatMap((line, index) => /^(?:[│|]\s*)?\$\s+.+$/.test(line) ? [index] : []);
+    const actionStart = actionIndexes.filter(index => prompt === undefined || index < prompt).at(-1);
+    const commandStart = commandIndexes.filter(index => prompt === undefined || index < prompt).at(-1);
+    const start = Math.max(actionStart ?? -1, commandStart ?? -1);
+    if (start < 0) return undefined;
+    block = lines.slice(start);
+    if (actionStart !== undefined && actionStart >= (commandStart ?? -1)) {
+      const header = /^(?:action|command|request):\s*(.+)$/i.exec(lines[actionStart]);
+      if (!header) return undefined;
+      const between = lines.slice(actionStart + 1, prompt ?? lines.length).filter(line => line.trim());
+      if (between.some(line => selectedOption(line) === undefined)) return undefined;
+      action = canonical(header[1]);
+    } else {
+      const first = /^(?:[│|]\s*)?\$\s+(.+)$/.exec(lines[commandStart!]);
+      if (!first) return undefined;
+      const continuation = lines.slice(commandStart! + 1, prompt ?? lines.length);
+      if (continuation.some(line => line.trim() && !/^\s+(?:[^❯>›]|$)/u.test(line))) return undefined;
+      const commandLines = [first[1], ...continuation.filter(line => line.trim()).map(line => line.trim())];
+      action = canonical(commandLines.join("\n"));
+    }
+  }
+  const selected = block.slice(prompt === undefined ? 0 : block.indexOf(lines[prompt]) + 1).flatMap(line => { const option = selectedOption(line); return option === undefined ? [] : [option]; });
   if (!action || selected.length !== 1 || !oneTimeOptions.has(selected[0])) return undefined;
   return { action, selected: selected[0] };
 }
