@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { State, record, textField, type Conversation, type Job, type Worker } from "./state.ts";
 import { WorkerHolds } from "./worker-holds.ts";
 import type { Agent, HerdrPort } from "./herdr.ts";
-import { canonicalActionText } from "./action-text.ts";
+import { ACTION_TEXT_VERSION, canonicalActionText } from "./action-text.ts";
 
 export interface RoutineApprovalRuntime {
   state: State;
@@ -43,7 +43,8 @@ export function recognizedDialog(text: string): { action: string; selected: stri
     const content = boxLines.map(line => {
       let value = line.replace(/^[│|]/, "").replace(/^ /, "");
       if (bordered && /│\s*$/u.test(value)) {
-        value = / │\s*$/u.test(value) ? value.replace(/ │\s*$/u, "") : value.slice(0, -1);
+        value = value.replace(/\s+$/u, "");
+        if (value.endsWith("│")) value = value.slice(0, -1).replace(/ $/u, "");
       }
       return value;
     });
@@ -107,7 +108,7 @@ export async function approveRoutine(
       !digest.test(actionDigest) || !digest.test(dialogFingerprint) || !reference || reference.length > 1000 || evidenceActionText.length > 2000)
     throw new Error("Routine approval needs a bounded authorized category, exact dialog fingerprint, and enter key");
   const hold = worker.holdId ? runtime.state.get<import("./worker-holds.ts").WorkerHold>("workerHolds", worker.holdId) : undefined;
-  if (!hold || hold.workerId !== worker.id || hold.generation !== (worker.generation ?? 0) ||
+  if (!hold || hold.actionTextVersion !== ACTION_TEXT_VERSION || hold.workerId !== worker.id || hold.generation !== (worker.generation ?? 0) ||
       hold.paneId !== worker.paneId || hold.conversationId !== conversation.id || hold.owner !== conversation.owner ||
       hold.organization !== conversation.metadata.sokosumi_organization_id || hold.actionDigest !== actionDigest || hold.decision)
     throw new Error("Exact recorded worker-dialog provenance is required; historical or unknown holds remain blocked");

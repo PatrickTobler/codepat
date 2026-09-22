@@ -117,6 +117,16 @@ test('Runtime.control strips exactly one structural border and preserves literal
   const g=await setup();g.runtime.herdr.call=async(args)=>args[1]==='read'?{text:recorded}:{};const gev={...g.evidence,actionText:'echo a │',dialogFingerprint:createHash('sha256').update(recorded).digest('hex')};await g.call('record-worker-hold',gev);const changed='╭────╮\n│ Bash command │\n│ echo a │\n╰────╯\nDo you want to proceed?\n❯ 1. Yes';g.runtime.herdr.call=async(args)=>args[1]==='read'?{text:changed}:{};
   await assert.rejects(g.runtime.control('worker-approve-routine',{jobId:g.job.id,workerId:g.w.id,evidence:{...gev,actionText:'echo a',dialogFingerprint:createHash('sha256').update(changed).digest('hex'),routine:true,category:'tests',key:'enter',authorizationReference:'owner request'}}),/does not match/);
 });
+test('routine approval rejects legacy or unknown action-text provenance across restart',async t=>{
+  const f=await fixture(t);const current=f.state.get<Worker>("workers",f.w.id)!;current.taskId='task';f.state.put('workers',current.id,current);const hold=f.state.get<WorkerHold>('workerHolds',current.holdId!)!;hold.taskId='task';f.state.put('workerHolds',hold.id,hold);f.runtime.api=async()=>({data:{ownerId:'owner',organizationId:'org',assigneeId:'coworker',status:'RUNNING'}});
+  const evidence={...f.evidence,actionText:'npm test',dialogFingerprint:createHash('sha256').update('Action: npm test\nDo you want to proceed?\n❯ 1. Yes').digest('hex')};f.runtime.herdr.call=async(args)=>args[1]==='read'?{text:'Action: npm test\nDo you want to proceed?\n❯ 1. Yes'}:{};await f.call('record-worker-hold',evidence);
+  const saved=f.state.get<WorkerHold>('workerHolds',evidence.holdId)!;delete saved.actionTextVersion;f.state.put('workerHolds',saved.id,saved);
+  await assert.rejects(f.runtime.control('worker-approve-routine',{jobId:f.job.id,workerId:f.w.id,evidence:{...evidence,routine:true,category:'tests',key:'enter',authorizationReference:'owner request'}}),/provenance/);
+  await assert.rejects(f.call('record-worker-hold',evidence),/canonicalization version/);
+  saved.actionTextVersion=99;f.state.put('workerHolds',saved.id,saved);
+  await assert.rejects(f.runtime.control('worker-approve-routine',{jobId:f.job.id,workerId:f.w.id,evidence:{...evidence,routine:true,category:'tests',key:'enter',authorizationReference:'owner request'}}),/provenance/);
+  const reopened=new State(join(f.dir,'state.sqlite'));try{assert.equal(reopened.get<WorkerHold>('workerHolds',saved.id)!.actionTextVersion,99);}finally{reopened.close();}
+});
 test('denial/cancellation retires exact queued instructions and stops without replaying the denied action',async t=>{
   for(const decision of ['denied','cancelled']){
     const f=await fixture(t);await f.call('record-worker-hold');await f.setStatus('done');

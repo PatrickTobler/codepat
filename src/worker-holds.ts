@@ -1,10 +1,10 @@
 import {createHash,randomUUID} from 'node:crypto';
 import {State,record,textField,type Worker,type Conversation,type Delivery,type Outbox} from './state.ts';
-import {canonicalActionText} from './action-text.ts';
+import {ACTION_TEXT_VERSION,canonicalActionText} from './action-text.ts';
 export interface WorkerHold {
   id:string;workerId:string;generation:number;paneId:string;taskId?:string;
   conversationId:string;owner:string;organization:string;createdAt:number;
-  actionDigest?:string;actionTextDigest?:string;evidenceReference?:string;recordedByJob?:string;
+  actionDigest?:string;actionTextDigest?:string;actionTextVersion?:number;evidenceReference?:string;recordedByJob?:string;
   decision?:'approved'|'denied'|'cancelled';decisionReference?:string;resolvedAt?:number;
   routineApprovedAt?:number;routineApprovalReference?:string;
   retiredDeliveryIds?:string[];resolvedByJob?:string;
@@ -27,10 +27,11 @@ export class WorkerHolds {
     if(!w.recoveryHold || h.resolvedAt)throw new Error('Hold is not active');
     const digest=textField(e,'actionDigest'),reference=textField(e,'evidenceReference'),actionText=typeof e.actionText==='string'?e.actionText:'';
     if(!/^[a-f0-9]{64}$/.test(digest) || reference.length>1000 || actionText.length>2000)throw new Error('Exact action digest and bounded private evidence reference required');
+    if(h.actionDigest && h.actionTextVersion!==ACTION_TEXT_VERSION)throw new Error('Existing action provenance has no recognized canonicalization version; create a fresh hold');
     if(h.actionDigest && (h.actionDigest!==digest || h.evidenceReference!==reference))throw new Error('Recorded action evidence cannot be replaced');
     const actionTextDigest=actionText ? createHash('sha256').update(canonicalActionText(actionText)).digest('hex') : undefined;
     if(h.actionDigest && (h.actionTextDigest!==actionTextDigest && actionTextDigest))throw new Error('Recorded action evidence cannot be replaced');
-    h.actionDigest=digest;if(actionTextDigest)h.actionTextDigest=actionTextDigest;h.evidenceReference=reference;h.recordedByJob=jobId;
+    h.actionDigest=digest;if(actionTextDigest){h.actionTextDigest=actionTextDigest;h.actionTextVersion=ACTION_TEXT_VERSION;}h.evidenceReference=reference;h.recordedByJob=jobId;
     this.state.put('workerHolds',h.id,h);return {ok:true,holdId:h.id,actionDigest:digest};
   }
   resolve(w:Worker,c:Conversation,input:unknown,jobId:string){
