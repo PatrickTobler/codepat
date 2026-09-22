@@ -31,6 +31,7 @@ import {
   State,
   textField,
   type Worker,
+  type WorkerKind,
 } from "./state.ts";
 
 export interface RuntimeConfig {
@@ -42,6 +43,8 @@ export interface RuntimeConfig {
   coworkerId?: string;
   workerIdleMs?: number;
   reviewIntervalMs?: number;
+  // Kinds whose CLI is installed on this host; start rejects everything else.
+  workerKinds?: WorkerKind[];
   repositories?: Record<string, string>;
   contactAccountsFile?: string;
 }
@@ -287,9 +290,11 @@ export class Runtime implements ChatService {
     key: string,
     options: { repository?: string; baseBranch?: string; kind?: string; projectId?: string } = {},
   ): Promise<Worker> {
-    const { repository = "default", baseBranch, kind = "codex" } = options;
-    if (kind !== "codex" && kind !== "claude")
-      throw new Error("Unsupported worker kind. Available: codex, claude");
+    const { repository = "default", baseBranch } = options;
+    const workerKinds = this.config.workerKinds ?? ["codex", "claude"];
+    const kind = workerKinds.find(available => available === (options.kind ?? "codex"));
+    if (!kind)
+      throw new Error(`Unsupported worker kind. Available: ${workerKinds.join(", ")}`);
     // Stable operation key prevents duplicate workers when an orchestrator turn recovers.
     const lookup = `worker:${job.id}:${key}`;
     const oldId = this.state.get<string>("workerKeys", lookup);
@@ -424,6 +429,14 @@ export class Runtime implements ChatService {
             ...(resume ? ["--continue"] : []),
             "--permission-mode",
             "acceptEdits",
+          ]
+        : worker.kind === "grok"
+        ? [
+            ...(resume ? ["--continue"] : []),
+            "--cwd",
+            worker.worktree,
+            "--always-approve",
+            "--no-auto-update",
           ]
         : [
             ...(resume ? ["resume", "--last"] : []),
@@ -1001,7 +1014,7 @@ export class Runtime implements ChatService {
         instructions: "Metadata only. Use scoped read/workers for details as needed. Do not infer missing authorization.",
       } : {
         incidents: this.incidents.context(this.state.get<Conversation>("conversations",job.conversationId)!,true),
-        workerKinds: ["codex", "claude"],
+        workerKinds: this.config.workerKinds ?? ["codex", "claude"],
         contactPolicy: { taskCoordination: this.contacts.coordinationAllowed({ userId: this.conversationOwner(job.conversationId)!, organizationId: this.state.get<Conversation>("conversations", job.conversationId)?.metadata.sokosumi_organization_id ?? "" }) },
         directMessages: this.contacts.recent({
           userId: this.conversationOwner(job.conversationId) ?? "",

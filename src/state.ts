@@ -30,8 +30,9 @@ export interface Conversation {
   owner: string;
   metadata: Record<string, string>;
 }
+export type WorkerKind = "codex" | "claude" | "grok";
 export interface Worker {
-  kind?: "codex" | "claude";
+  kind?: WorkerKind;
   id: string;
   name: string;
   prompt: string;

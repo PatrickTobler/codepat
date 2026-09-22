@@ -6,10 +6,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { HerdrPort } from "./herdr.ts";
-import { Runtime } from "./runtime.ts";
+import { Runtime, type RuntimeConfig } from "./runtime.ts";
 import { type Outbox, State, type Worker } from "./state.ts";
 
-function fixture() {
+function fixture(config: Partial<RuntimeConfig> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "codepat-reliability-"));
   const state = new State(join(dir, "state.sqlite"));
   const calls: string[][] = [];
@@ -30,6 +30,7 @@ function fixture() {
     apiUrl: "https://unused.invalid",
     apiKey: "test",
     coworkerId: "codepat",
+    ...config,
   });
   return {
     dir,
@@ -196,6 +197,58 @@ test("Claude workers launch and resume through Herdr with their original kind", 
     assert.equal(launch[launch.indexOf("--kind") + 1], "claude");
     assert.ok(launch.includes("--continue"));
     assert.equal(f.state.get<Worker>("workers", w.id)?.kind, "claude");
+  } finally {
+    f.close();
+  }
+});
+
+test("Grok workers launch and resume through Herdr when installed", async () => {
+  const f = fixture({ workerKinds: ["codex", "claude", "grok"] });
+  try {
+    f.state.put("meta", "workspace", "w1");
+    const w: Worker = {
+      id: "grok-worker",
+      name: "cp-grok",
+      kind: "grok",
+      prompt: "work",
+      repo: f.dir,
+      worktree: f.dir,
+      branch: "branch",
+      conversationId: "chat",
+      state: "starting",
+      createdAt: 0,
+      observedAt: 0,
+    };
+    f.state.put("workers", w.id, w);
+    await f.runtime.launchWorkerSession(w);
+    let launch = f.calls.find((a) => a[0] === "agent")!;
+    assert.equal(launch[launch.indexOf("--kind") + 1], "grok");
+    assert.equal(launch[launch.indexOf("--cwd") + 1], f.dir);
+    assert.ok(launch.includes("--always-approve"));
+    assert.ok(!launch.includes("--continue"));
+    assert.ok(!launch.includes("danger-full-access"));
+    f.calls.length = 0;
+    w.paneId = undefined;
+    f.state.put("workers", w.id, w);
+    await f.runtime.launchWorkerSession(w, true);
+    launch = f.calls.find((a) => a[0] === "agent")!;
+    assert.ok(launch.includes("--continue"));
+    assert.equal(f.state.get<Worker>("workers", w.id)?.kind, "grok");
+  } finally {
+    f.close();
+  }
+});
+
+test("unsupported worker selection names the kinds installed on this host", async () => {
+  const f = fixture({ workerKinds: ["codex"] });
+  try {
+    const c = f.runtime.createConversation("alice", {});
+    const job = f.runtime.createResponse("alice", c.id, "work");
+    await assert.rejects(
+      f.runtime.startWorker(job, "work", "key", { kind: "claude" }),
+      /Unsupported worker kind\. Available: codex$/,
+    );
+    assert.equal(f.state.all("workers").length, 0);
   } finally {
     f.close();
   }
