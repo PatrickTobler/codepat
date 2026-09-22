@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
 import {mkdtempSync,writeFileSync,readFileSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';import {join,resolve} from 'node:path';
 import {execFile} from 'node:child_process';import {promisify} from 'node:util';
@@ -9,14 +10,15 @@ import type {WorkerHold} from './worker-holds.ts';
 async function fixture(t:TestContext){
   const dir=mkdtempSync(join(tmpdir(),'hold-decisions-'));writeFileSync(join(dir,'client.json'),JSON.stringify({url:'http://localhost:1',token:'synthetic'}));
   const state=new State(join(dir,'state.sqlite'));let status='working';let prompts=0;
-  const runtime=new Runtime(state,{call:async()=>{throw new Error('no approval keys');},agents:async()=>[{pane_id:'pane',name:'worker',cwd:dir,agent_status:status}],prompt:async()=>{prompts++;}}, {dataDir:dir,cliPath:'cli',repo:dir,apiUrl:'http://api.invalid',coworkerId:'coworker'});
+  const dialog='Action: npm test\nDo you want to proceed?\n❯ 1. Yes';
+  const runtime=new Runtime(state,{call:async(args)=>{if(args[1]==='read')return {text:dialog};throw new Error('no approval keys');},agents:async()=>[{pane_id:'pane',name:'worker',cwd:dir,agent_status:status}],prompt:async()=>{prompts++;}}, {dataDir:dir,cliPath:'cli',repo:dir,apiUrl:'http://api.invalid',coworkerId:'coworker'});
   const c=runtime.createConversation('owner',{sokosumi_organization_id:'org'});
   const w:Worker={id:'worker',name:'worker',conversationId:c.id,repo:dir,worktree:dir,branch:'feature',prompt:'work',paneId:'pane',state:'working',generation:1,createdAt:0,observedAt:0};state.put('workers',w.id,w);
   const queued=runtime.queueInstruction(w,'Existing authorized instruction');
   status='blocked';await runtime.monitor();
   const held=state.get<Worker>('workers',w.id)!;
   const job=runtime.createResponse(c.owner,c.id,'Inspect exact dialog and record my decision');runtime.nextJob();
-  const evidence={holdId:held.holdId!,generation:1,paneId:'pane',actionDigest:'a'.repeat(64),evidenceReference:'private-inspection-reference'};
+  const evidence={holdId:held.holdId!,generation:1,paneId:'pane',actionDigest:'a'.repeat(64),actionText:'npm test',dialogFingerprint:createHash('sha256').update(dialog).digest('hex'),evidenceReference:'private-inspection-reference'};
   const call=(action:string,e:unknown=evidence)=>runtime.control(action,{jobId:job.id,workerId:w.id,evidence:e});
   t.after(()=>{state.close();rmSync(dir,{recursive:true,force:true});});
   return {dir,state,runtime,c,w,job,queued,evidence,call,prompts:()=>prompts,setStatus:async(s:string)=>{status=s;await runtime.monitor();}};
@@ -31,6 +33,33 @@ test('known owner-attested dialog resolves after closure, not merely idle/workin
   const reopened=new State(join(f.dir,'state.sqlite'));
   try{const runtime=new Runtime(reopened,f.runtime.herdr,f.runtime.config);assert.deepEqual(await runtime.control('reconcile-worker-hold',{jobId:f.job.id,workerId:f.w.id,evidence:decision}),result);}finally{reopened.close();}
   await f.runtime.deliver();assert.equal(f.prompts(),1);
+});
+test('control reconciliation returns the same decision receipt after generation drift',async t=>{
+  const f=await fixture(t);await f.call('record-worker-hold');await f.setStatus('idle');
+  const decision={...f.evidence,decision:'approved',decisionReference:'human-decision-reference'};
+  const result=await f.call('reconcile-worker-hold',decision);
+  const drifted={...f.state.get<Worker>('workers',f.w.id)!,generation:2};
+  f.state.put('workers',f.w.id,drifted);
+  assert.deepEqual(await f.call('reconcile-worker-hold',decision),result);
+  await assert.rejects(f.call('reconcile-worker-hold',{...decision,decisionReference:'different'}),/conflicts with prior decision/);
+});
+test('Runtime.control approves only the exact one-time selected provider option',async t=>{
+  const f=await fixture(t);
+  const currentWorker=f.state.get<Worker>("workers",f.w.id)!;currentWorker.taskId='task';f.state.put('workers',currentWorker.id,currentWorker);const hold=f.state.get<WorkerHold>('workerHolds',currentWorker.holdId!)!;hold.taskId='task';f.state.put('workerHolds',hold.id,hold);
+  f.runtime.api=async()=>({data:{ownerId:'owner',organizationId:'org',assigneeId:'coworker',status:'RUNNING'}});
+  await f.call('record-worker-hold');
+  f.runtime.herdr.call=async(args)=>args[1]==='read'?{text:'Action: npm test\nDo you want to proceed?\n❯ 1. Yes'}:{};
+  const routine={...f.evidence,routine:true,category:'tests',key:'enter',actionText:'npm test',authorizationReference:'owner request'};
+  const accepted=await f.runtime.control('worker-approve-routine',{jobId:f.job.id,workerId:f.w.id,evidence:routine}) as {status:string};
+  assert.equal(accepted.status,'accepted');
+  const g=await fixture(t);const currentG=g.state.get<Worker>("workers",g.w.id)!;currentG.taskId='task';g.state.put('workers',currentG.id,currentG);const gh=g.state.get<WorkerHold>('workerHolds',currentG.holdId!)!;gh.taskId='task';g.state.put('workerHolds',gh.id,gh);
+  g.runtime.api=async()=>({data:{ownerId:'owner',organizationId:'org',assigneeId:'coworker',status:'RUNNING'}});await g.call('record-worker-hold');
+  g.runtime.herdr.call=async(args)=>args[1]==='read'?{text:"Action: npm test\nDo you want to proceed?\n❯ 1. Yes, allow all edits during this session"}:{};
+  const gEvidence={...routine,holdId:currentG.holdId,dialogFingerprint:createHash('sha256').update('Action: npm test\nDo you want to proceed?\n❯ 1. Yes, allow all edits during this session').digest('hex')};
+  await assert.rejects(g.runtime.control('worker-approve-routine',{jobId:g.job.id,workerId:g.w.id,evidence:gEvidence}),/format or selected option/);
+  g.runtime.herdr.call=async(args)=>args[1]==='read'?{text:'Action: npm test\noutput > yes, proceeding\nAction: rm -rf ~/workspaces\nDo you want to proceed?\n❯ 1. No'}:{};
+  const stale={...gEvidence,dialogFingerprint:createHash('sha256').update('Action: npm test\noutput > yes, proceeding\nAction: rm -rf ~/workspaces\nDo you want to proceed?\n❯ 1. No').digest('hex')};
+  await assert.rejects(g.runtime.control('worker-approve-routine',{jobId:g.job.id,workerId:g.w.id,evidence:stale}),/format or selected option/);
 });
 test('denial/cancellation retires exact queued instructions and stops without replaying the denied action',async t=>{
   for(const decision of ['denied','cancelled']){

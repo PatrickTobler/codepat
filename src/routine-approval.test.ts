@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { State, type Conversation, type Job, type Worker } from "./state.ts";
 import { WorkerHolds } from "./worker-holds.ts";
-import { approveRoutine } from "./routine-approval.ts";
+import { approveRoutine, recognizedDialog } from "./routine-approval.ts";
 
 function fixture() {
   const dir = mkdtempSync(join(process.env.HOME ?? tmpdir(), "codepat-routine-"));
@@ -41,6 +41,12 @@ function recordHold(f: ReturnType<typeof fixture>, actionDigest = "a".repeat(64)
   f.state.put("workers", f.worker.id, f.worker);
     holds.recordAction(f.worker, f.conversation, { holdId: current.id, generation: 1, paneId: "pane", actionDigest, actionText: "npm test", evidenceReference: "dialog" }, f.job.id);
 }
+test("provider dialog parser uses one trailing block and exact one-time options", () => {
+  assert.deepEqual(recognizedDialog("Action: npm test\nDo you want to proceed?\n❯ 1. Yes"), { action: "npm test", selected: "yes" });
+  assert.equal(recognizedDialog("Action: npm test\nDo you want to proceed?\n❯ 1. Yes, allow all edits during this session"), undefined);
+  assert.equal(recognizedDialog("Action: npm test\n❯ 1. Yes\n❯ 2. No"), undefined);
+  assert.equal(recognizedDialog("Action: npm test\noutput > yes, proceeding\nAction: rm -rf ~/workspaces\nDo you want to proceed?\n❯ 1. No"), undefined);
+});
 test("routine approval requires recorded provenance and is idempotent", async () => {
   const f = fixture();
   try {

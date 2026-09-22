@@ -118,6 +118,6 @@ test('report preflight refuses remote ownership drift before any POST',async t=>
   const result=await f.runtime.control('task-report',{jobId:f.job.id,status:'RUNNING',text:'Update'}) as {notificationId:string};
   globalThis.fetch=async(_url,init)=>{if(init?.method==='POST')posts++;return Response.json({data:{assigneeId:'coworker',ownerId:'another-owner',organizationId:'org',status:'READY'}});};
   await f.runtime.flushOutbox();assert.equal(posts,0);
-  assert.equal(f.state.get<Outbox>('outbox',result.notificationId)!.status,'pending');
-  assert.match(f.state.get<Outbox>('outbox',result.notificationId)!.blockedReason!,/no new POST/);
+  assert.equal(f.state.get<Outbox>('outbox',result.notificationId)!.status,'failed');
+  assert.match(f.state.get<Outbox>('outbox',result.notificationId)!.blockedReason!,/unverified owner\/organization scope/);
 });

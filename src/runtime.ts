@@ -21,7 +21,7 @@ import { type Agent, type HerdrPort, paneFrom } from "./herdr.ts";
 import type { ChatService } from "./http.ts";
 import { inspectProject, pages, projectId } from "./projects.ts";
 import { prepareRepository } from "./repository.ts";
-import { approveRoutine } from "./routine-approval.ts";
+import { approveRoutine, canonical, recognizedDialog } from "./routine-approval.ts";
 import {
   type Conversation,
   type Delivery,
@@ -1580,12 +1580,23 @@ export class Runtime implements ChatService {
         item.reconciliationHttpStatus=undefined;item.blockedReason=undefined;
         item.retryAt = undefined;
       } catch (error) {
+        const preflightScopeFailure = !attemptedPost && Boolean(taskId && item.requestedTaskStatus && /Report conversation scope changed|Task owner, organization or assignment changed/.test(String(error)));
         if(attemptedPost){
           item.httpStatus=error instanceof ApiError ? error.status : undefined;
           item.rejectionKind=error instanceof ApiError ? error.rejectionKind : undefined;
         }else{
           item.reconciliationHttpStatus=error instanceof ApiError ? error.status : undefined;
           item.blockedReason="Delivery preflight or reconciliation failed; no new POST attempted";
+        }
+        if(preflightScopeFailure){
+          item.status="failed";
+          item.retryAt=undefined;
+          item.blockedReason="Task report is permanently blocked by an unverified owner/organization scope; no POST was attempted";
+          item.lastError="Task report scope cannot be verified; coordinator review is required before a new scoped report";
+          const scopedConversation=item.conversationId ? this.state.get<Conversation>("conversations",item.conversationId) : undefined;
+          if(scopedConversation?.owner && scopedConversation.metadata.sokosumi_organization_id){
+            this.incidents.record(scopedConversation,{source:"delivery",sourceId:"outbox:"+item.id,kind:"blocked",cause:"delivery_failed",taskId:taskId?decodeURIComponent(taskId):undefined});
+          }
         }
         if (item.status === "sending")
           item.status =
@@ -1612,10 +1623,10 @@ export class Runtime implements ChatService {
           item.retryAt = Date.now();
           item.lastError = "Status already current; comment-only delivery queued after confirmed rejection";
         }
-        item.retryAt =
+        if(!preflightScopeFailure) item.retryAt =
           Date.now() +
           Math.min(60_000, 2000 * 2 ** Math.min(item.attempts ?? 0, 5));
-        if (error instanceof ApiError && error.status === 422 && error.rejectionKind === "same_status" && item.commentOnly)
+        if (!preflightScopeFailure && error instanceof ApiError && error.status === 422 && error.rejectionKind === "same_status" && item.commentOnly)
           item.retryAt = Date.now();
       }
       if (this.state.get<Outbox>("outbox", item.id)?.status !== "superseded")
@@ -1888,9 +1899,24 @@ export class Runtime implements ChatService {
       this.workerOperations.add(worker.id);
       try{
         const input=record(body.evidence);
+        if(action==="reconcile-worker-hold" && savedHold?.resolvedAt){
+          const current=this.state.get<Worker>("workers",worker.id)!;
+          const currentC=this.state.get<Conversation>("conversations",c.id)!;
+          if(this.job(job.id).status!=="in_progress")throw new Error("Owner chat ended before reconciliation");
+          return holds.resolve(current,currentC,input,job.id);
+        }
         holds.bound(worker,c,input);
         const live=await this.workerAgent(worker);
         if(!live || (action==="record-worker-hold" ? live.agent_status!=="blocked" : !["idle","done"].includes(live.agent_status)))throw new Error("Verify the exact blocked dialog or its closed idle/done session first");
+        if(action==="record-worker-hold"){
+          const pane=await this.herdr.call(["agent","read",worker.paneId!,"--source","recent-unwrapped","--lines","80"]);
+          const paneText=typeof pane.text === "string" ? pane.text : JSON.stringify(pane);
+          const parsed=recognizedDialog(paneText);
+          const suppliedAction=textField(input,"actionText");
+          const suppliedFingerprint=textField(input,"dialogFingerprint");
+          if(!parsed || canonical(parsed.action)!==canonical(suppliedAction))throw new Error("Recorded action does not match the inspected worker dialog");
+          if(createHash("sha256").update(paneText).digest("hex")!==suppliedFingerprint)throw new Error("Inspected worker dialog fingerprint changed");
+        }
         if(worker.taskId){
           const task=record((await this.api(`/tasks/${encodeURIComponent(worker.taskId)}`,"GET",undefined,this.contextHeaders(c))).data);
           if(task.assigneeId!==this.config.coworkerId || (task.ownerId??task.userId)!==c.owner || task.organizationId!==c.metadata.sokosumi_organization_id)throw new Error("Task owner/organization/assignment cannot be verified");

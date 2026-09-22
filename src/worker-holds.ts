@@ -36,7 +36,7 @@ export class WorkerHolds {
     return this.state.transaction(()=>{
       const e=record(input), saved=e.holdId ? this.state.get<WorkerHold>('workerHolds',textField(e,'holdId')) : undefined;
       if(saved?.resolvedAt && saved.workerId===w.id && saved.conversationId===c.id && saved.owner===c.owner && saved.organization===(c.metadata.sokosumi_organization_id??'') && w.holdId===saved.id && w.taskId===saved.taskId){
-        if(textField(e,'decision')!==saved.decision)throw new Error('Resolution conflicts with prior decision');
+        if(textField(e,'decision')!==saved.decision || textField(e,'decisionReference')!==saved.decisionReference)throw new Error('Resolution conflicts with prior decision');
         return {ok:true,holdId:saved.id,decision:saved.decision,resolvedAt:saved.resolvedAt};
       }
       const {hold:h,evidence}=this.bound(w,c,input);

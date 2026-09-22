@@ -13,13 +13,32 @@ export interface RoutineApprovalRuntime {
 
 const categories = new Set(["read-only", "tests", "dependency-install"]);
 const digest = /^[a-f0-9]{64}$/;
-const canonical = (value: string) => value.trim().replace(/\r\n/g, "\n").replace(/[ \t]+/g, " ");
-function recognizedDialog(text: string): { action: string; selected: string } | undefined {
+export const canonical = (value: string) => value.trim().replace(/\r\n/g, "\n").replace(/[ \t]+/g, " ");
+const oneTimeOptions = new Set(["yes", "allow", "approve", "continue", "run", "accept"]);
+function selectedOption(line: string): string | undefined {
+  if (!/^(?:❯|>|›)\s*/u.test(line) && !/\(SELECTED\)\s*$/i.test(line)) return undefined;
+  return canonical(line.replace(/^(?:❯|>|›)\s*/u, "").replace(/\s*\(SELECTED\)\s*$/i, "").replace(/^\d+[.)]\s*/, "").replace(/[.!:]+$/, "")).toLowerCase();
+}
+export function recognizedDialog(text: string): { action: string; selected: string } | undefined {
   const lines = canonical(text).split("\n");
-  const action = lines.find(line => /^(?:action|command|request):\s*.+$/i.test(line))?.replace(/^(?:action|command|request):\s*/i, "");
-  const selected = lines.find(line => /\(SELECTED\)\s*$/i.test(line) || /^>\s*/.test(line))?.replace(/^>\s*/, "").replace(/\s*\(SELECTED\)\s*$/i, "").trim();
-  if (!action || !selected) return undefined;
-  return { action: canonical(action), selected: canonical(selected) };
+  const promptIndexes = lines.flatMap((line, index) => /do you want to proceed\?\s*$/i.test(line) ? [index] : []);
+  const actionIndexes = lines.flatMap((line, index) => /^(?:action|command|request):\s*.+$/i.test(line) ? [index] : []);
+  const prompt = promptIndexes.at(-1);
+  const commandIndexes = lines.flatMap((line, index) => /^(?:[│|]\s*)?\$\s+.+$/.test(line) ? [index] : []);
+  const actionStart = [...actionIndexes, ...commandIndexes].filter(index => prompt === undefined || index <= prompt).at(-1);
+  const start = actionStart ?? prompt;
+  if (start === undefined) return undefined;
+  const block = lines.slice(start);
+  const actions = block.flatMap(line => {
+    const match = /^(?:action|command|request):\s*(.+)$/i.exec(line);
+    if (match) return [canonical(match[1])];
+    const shell = /^(?:[│|]\s*)?\$\s+(.+)$/.exec(line);
+    return shell ? [canonical(shell[1])] : [];
+  });
+  const action = actions.length === 1 ? actions[0] : undefined;
+  const selected = block.flatMap(line => { const option = selectedOption(line); return option === undefined ? [] : [option]; });
+  if (!action || selected.length !== 1 || !oneTimeOptions.has(selected[0])) return undefined;
+  return { action, selected: selected[0] };
 }
 
 /** Approve one inspected, task-authorized dialog. This is deliberately not a generic key sender. */
@@ -44,9 +63,10 @@ export async function approveRoutine(
   const reference = textField(evidence, "authorizationReference");
   const category = textField(evidence, "category");
   const key = textField(evidence, "key");
+  const evidenceActionText = textField(evidence, "actionText");
   const dialogFingerprint = textField(evidence, "dialogFingerprint");
   if (evidence.routine !== true || !categories.has(category) || key !== "enter" ||
-      !digest.test(actionDigest) || !digest.test(dialogFingerprint) || !reference || reference.length > 1000)
+      !digest.test(actionDigest) || !digest.test(dialogFingerprint) || !reference || reference.length > 1000 || evidenceActionText.length > 2000)
     throw new Error("Routine approval needs a bounded authorized category, exact dialog fingerprint, and enter key");
   const hold = worker.holdId ? runtime.state.get<import("./worker-holds.ts").WorkerHold>("workerHolds", worker.holdId) : undefined;
   if (!hold || hold.workerId !== worker.id || hold.generation !== (worker.generation ?? 0) ||
@@ -64,11 +84,12 @@ export async function approveRoutine(
   const dialog = await runtime.herdr.call(["agent", "read", worker.paneId, "--source", "recent-unwrapped", "--lines", "80"]);
   const dialogText = typeof dialog.text === "string" ? dialog.text : JSON.stringify(dialog);
   const parsed = recognizedDialog(dialogText);
-  if (!parsed || !/^(?:yes|allow|approve|continue|run|accept)\b/i.test(parsed.selected)) throw new Error("The worker dialog format or selected option is not recognized as a routine approval");
+  if (!parsed) throw new Error("The worker dialog format or selected option is not recognized as a routine approval");
   const observedFingerprint = createHash("sha256").update(dialogText).digest("hex");
   if (observedFingerprint !== dialogFingerprint) throw new Error("The inspected worker dialog changed; no approval key sent");
   const observedActionDigest = createHash("sha256").update(canonical(parsed.action)).digest("hex");
   if (!hold.actionTextDigest || observedActionDigest !== hold.actionTextDigest) throw new Error("The live dialog action does not match the recorded routine action");
+  if (canonical(evidenceActionText) !== canonical(parsed.action)) throw new Error("Approval evidence action does not match the inspected worker dialog");
   const current = runtime.state.get<Worker>("workers", worker.id);
   if (!current || current.paneId !== worker.paneId || current.generation !== worker.generation)
     throw new Error("Worker identity changed during approval");
