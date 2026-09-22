@@ -40,6 +40,7 @@ test('lost prompt acknowledgement persists uncertain across reopen, with no blin
   const reopened=new State(join(f.dir,'state.sqlite'));
   try{const r=new Runtime(reopened,f.herdr,f.r.config);const s=new LegacyContinuation(r,{codex:f.history,claude:f.history});assert.equal((await s.run(f.job,f.w.id,f.evidence)).status,'uncertain');}finally{reopened.close();}
   assert.equal(attempts,1);assert.equal(f.state.get<Worker>('workers',f.w.id)!.recoveryHold,true);
+  assert.equal(f.state.get<any>('legacyContinuations',f.w.id)!.uncertainPhase,'sending');
 });
 test('live or blocked retained session is never replaced or prompted; restricted startup dialog waits',async t=>{
   const f=fixture(t);f.setLive(true,'blocked');const first=await f.service.run(f.job,f.w.id,f.evidence);assert.equal(first.status,'blocked');assert.equal(f.calls.length,0);assert.equal(f.prompts.length,0);
@@ -62,7 +63,7 @@ test('ownership/identity/delivery races and wrong saved history stop before effe
 });
 test('uncertain launch never restarts; stale authorization and reporting scope are refused',async t=>{
   const f=fixture(t);const call=f.herdr.call;f.herdr.call=async args=>{if(args[0]==='agent')throw new Error('unknown start outcome');return call(args);};
-  assert.equal((await f.service.run(f.job,f.w.id,f.evidence)).status,'uncertain');await f.service.run(f.job,f.w.id,f.evidence);
+  assert.equal((await f.service.run(f.job,f.w.id,f.evidence)).status,'uncertain');assert.equal(f.state.get<any>('legacyContinuations',f.w.id)!.uncertainPhase,'starting');await f.service.run(f.job,f.w.id,f.evidence);
   assert.equal(f.calls.filter(a=>a[0]==='tab').length,1);
   await assert.rejects(f.service.run(f.job,f.w.id,{...f.evidence,instruction:'different'}),/differs/);
   const token=JSON.parse(readFileSync(f.r.scopedConfig({kind:'worker',id:f.w.id,generation:1}),'utf8')).token;

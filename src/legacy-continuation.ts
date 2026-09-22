@@ -11,6 +11,7 @@ interface Continuation {
   authorizationReference:string;instruction:string;quarantineDeliveryIds:string[];
   priorResult?:string;createdAt:number;paneId?:string;reportConfig?:string;
   resumePhase?:'reserved'|'waiting';
+  uncertainPhase?:'creating'|'starting'|'sending';
   status:'reserved'|'creating'|'starting'|'waiting'|'sending'|'accepted'|'uncertain'|'blocked';reason?:string;
 }
 class ContinuationBlocked extends Error {}
@@ -52,7 +53,7 @@ export class LegacyContinuation {
       requirements:['Exact saved session ID with private provenance','Renewed owner authorization for independent read-only work','No live agent or non-shell process in retained pane','Historical actions remain unknown; no replay or approval'],
       continuation:grant?this.result(grant):undefined};
   }
-  result(g:Continuation){return {workerId:g.workerId,key:g.key,status:g.status,reason:g.reason,paneId:g.paneId,historicalHoldRetained:true,quarantineDeliveryIds:g.quarantineDeliveryIds,accepted:g.status==='accepted'};}
+  result(g:Continuation){return {workerId:g.workerId,key:g.key,status:g.status,reason:g.reason,uncertainPhase:g.uncertainPhase,paneId:g.paneId,historicalHoldRetained:true,quarantineDeliveryIds:g.quarantineDeliveryIds,accepted:g.status==='accepted'};}
   current(job:Job,g:Continuation){
     const {w,c}=this.context(job,g.workerId);
     if(c.owner!==g.owner || c.metadata.sokosumi_organization_id!==g.organization || this.snapshot(w,c).digest!==g.expected)throw new ContinuationBlocked('Continuation identity, ownership, hold or historical deliveries changed');
@@ -133,8 +134,10 @@ export class LegacyContinuation {
       g.status='accepted';g.reason=undefined;this.save(g);return this.result(g);
     }catch(error){
       const external=['creating','starting','sending'].includes(g.status);
+      const externalPhase=['creating','starting','sending'].includes(g.status) ? g.status as 'creating'|'starting'|'sending' : undefined;
       g.resumePhase=g.status==='waiting'?'waiting':'reserved';
       g.status=external?'uncertain':'blocked';
+      g.uncertainPhase=externalPhase;
       g.reason=external?'External outcome unconfirmed; retained without replay':error instanceof ContinuationBlocked?error.message:'Read-only continuation preflight failed; inspect session metadata and scoped access';
       this.save(g);return this.result(g);
     }
