@@ -13,7 +13,7 @@ export interface RoutineApprovalRuntime {
 
 const categories = new Set(["read-only", "tests", "dependency-install"]);
 const digest = /^[a-f0-9]{64}$/;
-export const canonical = (value: string) => value.trim().replace(/\r\n/g, "\n").replace(/[ \t]+/g, " ");
+export const canonical = (value: string) => value.replace(/\r\n/g, "\n").trim();
 const oneTimeOptions = new Set(["yes", "allow", "approve", "continue", "run", "accept"]);
 function selectedOption(line: string): string | undefined {
   if (!/^(?:❯|>|›)\s*/u.test(line) && !/\(SELECTED\)\s*$/i.test(line)) return undefined;
@@ -29,9 +29,14 @@ export function recognizedDialog(text: string): { action: string; selected: stri
   let action: string | undefined;
   let block: string[];
   if (boxStart !== undefined && prompt !== undefined) {
-    const boxLines = lines.slice(boxStart + 1, prompt);
+    const topBorder = lines.slice(0, boxStart).findLastIndex(line => /^\s*[╭┌].*[╮┐]\s*$/u.test(line));
+    const bottomBorder = lines.findIndex((line, index) => index > boxStart && /^\s*[╰└].*[╯┘]\s*$/u.test(line));
+    const bordered = topBorder >= 0;
+    if (bordered && (bottomBorder < 0 || (prompt > bottomBorder && lines.slice(bottomBorder + 1, prompt).some(line => line.trim() && !/^(?:Tip:|This command requires approval|Description:)/i.test(line.trim()))))) return undefined;
+    const end = bottomBorder >= 0 && bottomBorder < prompt ? bottomBorder : prompt;
+    const boxLines = lines.slice(boxStart + 1, end);
     if (!boxLines.length || boxLines.some(line => line.trim() && !/^[│|]/.test(line))) return undefined;
-    const content = boxLines.map(line => line.replace(/^[│|]\s?/, "").replace(/\s*[│|]\s*$/, "").trim()).filter(Boolean);
+    const content = boxLines.map(line => line.replace(/^[│|]\s?/, "").replace(/\s*│\s*$/, "").trim()).filter(Boolean);
     if (!content.length) return undefined;
     action = canonical(content.join("\n"));
     block = lines.slice(boxStart);
@@ -47,7 +52,8 @@ export function recognizedDialog(text: string): { action: string; selected: stri
       const header = /^(?:action|command|request):\s*(.+)$/i.exec(lines[actionStart]);
       if (!header) return undefined;
       const between = lines.slice(actionStart + 1, prompt ?? lines.length).filter(line => line.trim());
-      if (between.some(line => selectedOption(line) === undefined)) return undefined;
+      if (prompt !== undefined && between.length) return undefined;
+      if (prompt === undefined && between.some(line => selectedOption(line) === undefined)) return undefined;
       action = canonical(header[1]);
     } else {
       const first = /^(?:[│|]\s*)?\$\s+(.+)$/.exec(lines[commandStart!]);

@@ -73,6 +73,14 @@ test('Runtime.control binds Claude box action and rejects stale recognized prefi
   const routine={...recordEvidence,routine:true,category:'tests',key:'enter',authorizationReference:'owner request'};
   const result=await g.runtime.control('worker-approve-routine',{jobId:g.job.id,workerId:g.w.id,evidence:routine}) as {status:string};assert.equal(result.status,'accepted');
 });
+test('Runtime.control preserves trailing shell pipes and quoted whitespace in the action receipt',async t=>{
+  const f=await fixture(t);const current=f.state.get<Worker>("workers",f.w.id)!;current.taskId='task';f.state.put('workers',current.id,current);const hold=f.state.get<WorkerHold>('workerHolds',current.holdId!)!;hold.taskId='task';f.state.put('workerHolds',hold.id,hold);f.runtime.api=async()=>({data:{ownerId:'owner',organizationId:'org',assigneeId:'coworker',status:'RUNNING'}});
+  const recorded='│ Bash command │\n│ cat notes.txt │\nDo you want to proceed?\n❯ 1. Yes';
+  f.runtime.herdr.call=async(args)=>args[1]==='read'?{text:recorded}:{};
+  const evidence={...f.evidence,actionText:'cat notes.txt',dialogFingerprint:createHash('sha256').update(recorded).digest('hex')};await f.call('record-worker-hold',evidence);
+  const changed='│ Bash command │\n│ cat notes.txt | │\nDo you want to proceed?\n❯ 1. Yes';f.runtime.herdr.call=async(args)=>args[1]==='read'?{text:changed}:{};
+  await assert.rejects(f.runtime.control('worker-approve-routine',{jobId:f.job.id,workerId:f.w.id,evidence:{...evidence,routine:true,category:'tests',key:'enter',authorizationReference:'owner request',actionText:'cat notes.txt |',dialogFingerprint:createHash('sha256').update(changed).digest('hex')} }),/does not match/);
+});
 test('denial/cancellation retires exact queued instructions and stops without replaying the denied action',async t=>{
   for(const decision of ['denied','cancelled']){
     const f=await fixture(t);await f.call('record-worker-hold');await f.setStatus('done');
