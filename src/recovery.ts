@@ -29,6 +29,8 @@ export interface TurnReceipt {
   threadId?: string;
   completed?: boolean;
   failure?: string;
+  // Set when Claude Code handled the turn after Codex was unavailable.
+  fallback?: "claude";
 }
 export function saveReceipt(path: string, value: unknown): void {
   writeFileSync(`${path}.tmp`, JSON.stringify(value), { mode: 0o600 });
@@ -64,6 +66,7 @@ export function failureText(kind: string): string {
     turn_interrupted: "The turn was interrupted.",
     turn_exit_failure: "The turn exited unsuccessfully.",
     turn_empty_output: "The turn ended without a final answer.",
+    fallback_failed: "Codex was unavailable and the Claude Code fallback also failed.",
     recovery_required: "The previous turn stopped without a confirmed completion.",
     recovery_limit: "The bounded recovery limit was reached.",
   };

@@ -67,6 +67,12 @@ A terminal failure stays failed even if partial final text exists or a process e
 
 Provider safety-policy rejection is not a timeout and is not evidence of host resource exhaustion. Resolve it through supported provider access/review channels where appropriate; do not automatically replay, rephrase to evade the restriction, switch credentials or weaken approvals. A generic nonzero exit without recognized protocol evidence remains an unknown process failure. Historic exact causes cannot always be recovered: inspect only the affected turn's authorized private session error metadata, never publish its transcript.
 
+## Claude Code orchestrator fallback
+
+When a Codex turn fails as usage limit, authentication, rate limit, connection or context limit *before emitting any item* (no command, tool call or message), the runner reruns the same prompt with `claude -p --output-format stream-json --permission-mode bypassPermissions` under the same `codepat-turn-<stem>.service` name, so the supervisor's liveness check and receipts still cover it. Codex policy rejections and failures after Codex acted never fall back: the first could route around a provider restriction, the second could repeat side effects.
+
+Each conversation gets one deterministic Claude session (derived from the conversation ID, resumed with `--resume` once its session file exists); review and incident turns run with `--no-session-persistence`, matching their fresh Codex context. Claude does not see earlier Codex history and is told to read current state through the CLI. The receipt records `fallback: "claude"` and clears the Codex failure; the answer is written to the output file before `completed` is set, so ordinary recovery can deliver it. If Claude also fails, the job fails as `fallback_failed`. Codex stays primary and is tried first on every turn.
+
 These diagnostics require a new pinned bridge/runner release after a natural drain. A previous deadline-only deployment does not activate this addition. Keep the one-hour settings and all worker/state identities; no active coordinator interruption is required or permitted.
 
 ### Worker instruction holds

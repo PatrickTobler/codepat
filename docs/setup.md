@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-Use a dedicated Linux account with a working systemd user manager, Git, Node 24, npm, Herdr and Codex. Claude Code is optional for `--kind claude`. Caddy and a DNS name are needed for the proxy example. GitHub CLI is useful for publishing branches and draft PRs. Each target repository may need its own runtimes and services; workers read that repository's setup instructions.
+Use a dedicated Linux account with a working systemd user manager, Git, Node 24, npm, Herdr and Codex. Claude Code is optional for `--kind claude` and is also the orchestrator fallback when Codex is unavailable. Grok Build (`curl -fsSL https://x.ai/cli/install.sh | bash`, then `grok login` or `XAI_API_KEY`) is optional for `--kind grok`. The bridge offers a worker kind only if its CLI answers `--version` at service start, so restart `codepat.service` after installing one. Caddy and a DNS name are needed for the proxy example. GitHub CLI is useful for publishing branches and draft PRs. Each target repository may need its own runtimes and services; workers read that repository's setup instructions.
 
 The inspected host has Node 24.21.0, npm 11.19.0, Herdr 0.9.0, Codex CLI 0.154.0 and Claude Code 2.1.272. These are observed versions, not proof that every upstream combination works. Automated tests mock Herdr and Sokosumi. Native Windows/macOS service installation is not implemented: the runner itself depends on Linux `systemd-run`.
 

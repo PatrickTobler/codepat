@@ -20,7 +20,7 @@ status | repositories | instances | workers | projects | project <uuid>
 contacts <name-or-email>
 dm-send <stable-key> (--to <name-or-email> | --recipient <verified-user-id>) [--room <uuid>] [--coordination <authorized-task-purpose>] --file <message>
 dm-status <stable-key> | dm-retry <stable-key>
-start <stable-key> --file <prompt> --project <uuid> [--repo <path>] [--base <branch>] [--kind codex|claude]
+start <stable-key> --file <prompt> --project <uuid> [--repo <path>] [--base <branch>] [--kind codex|claude|grok]
 send|resume <worker> --file <instructions> | stop|read <worker>
 worker-result <worker> --file <result> | task-report <status> --file <comment>
 task-project <task> --project <uuid> --owner-config <private-json>

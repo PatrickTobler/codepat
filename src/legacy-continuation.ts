@@ -20,6 +20,7 @@ export class LegacyContinuation {
   roots:{codex:string;claude:string};
   constructor(runtime:Runtime,roots={codex:join(process.env.CODEX_HOME??join(homedir(),'.codex'),'sessions'),claude:join(process.env.CLAUDE_CONFIG_DIR??join(homedir(),'.claude'),'projects')}){this.runtime=runtime;this.roots=roots;}
   verifySession(w:Worker,g:Pick<Continuation,'sessionId'|'sessionEvidenceReference'>):void{
+    if(w.kind==='grok')throw new ContinuationBlocked('Legacy continuation supports Codex and Claude sessions only');
     const root=realpathSync(w.kind==='claude'?this.roots.claude:this.roots.codex);
     const path=realpathSync(g.sessionEvidenceReference),rel=relative(root,path);
     if(rel.startsWith('..') || isAbsolute(rel))throw new ContinuationBlocked('Session evidence is outside the provider history root');

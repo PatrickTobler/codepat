@@ -15,7 +15,7 @@ export interface Incident {
   notificationMissing?: boolean;
   reviewFailure?: string; notificationIds?: string[];
 }
-const causes = new Set(["turn_timeout","turn_oom_killed","turn_signal","turn_interrupted","turn_exit_failure","turn_empty_output","recovery_required","recovery_limit","runner_error","provider_policy","provider_auth","provider_usage_limit","provider_rate_limit","provider_context_limit","provider_connection","provider_failure","worker_blocked","worker_missing","worker_recovered","turn_recovered","delivery_failed","delivery_uncertain","monitor_unavailable"]);
+const causes = new Set(["turn_timeout","turn_oom_killed","turn_signal","turn_interrupted","turn_exit_failure","turn_empty_output","recovery_required","recovery_limit","fallback_failed","runner_error","provider_policy","provider_auth","provider_usage_limit","provider_rate_limit","provider_context_limit","provider_connection","provider_failure","worker_blocked","worker_missing","worker_recovered","turn_recovered","delivery_failed","delivery_uncertain","monitor_unavailable"]);
 export function safeCause(value: unknown): string { return typeof value === "string" && causes.has(value) ? value : "unknown_failure"; }
 export function causeText(cause: string): string {
   const fixed: Record<string, string> = {

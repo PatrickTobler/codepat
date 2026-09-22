@@ -2,9 +2,9 @@
 
 CodePat connects Sokosumi conversations and tasks to a persistent coding coordinator and concurrent Herdr workers. This standalone repository contains the CLI, HTTP bridge, SQLite state, runner, operating prompt, registration/service scripts, example configuration and tests. It does not need the Sokosumi monorepo, database or build system.
 
-The coordinator runs Codex. Workers use Codex or Claude Code in isolated Git worktrees. A background monitor keeps observing workers while the coordinator answers other requests. Project selection is explicit and checked against the requesting user's accessible Sokosumi workspace. Existing tasks and workers retain their identities.
+The coordinator runs Codex, falling back to Claude Code for a turn when Codex is unavailable (usage limit, auth, rate limit, connection or context limit) before it acted. Workers use Codex, Claude Code or Grok Build, whichever are installed, in isolated Git worktrees. A background monitor keeps observing workers while the coordinator answers other requests. Project selection is explicit and checked against the requesting user's accessible Sokosumi workspace. Existing tasks and workers retain their identities.
 
-**Use only with trusted collaborators.** Agents run with the host account's filesystem, network and Git credentials. Codex runs with full access and no approval prompts. The chat organization header is a filter, not authentication; deploy trusted ingress before exposing chat. See [security and operations](docs/operations.md).
+**Use only with trusted collaborators.** Agents run with the host account's filesystem, network and Git credentials. Codex, the Claude Code fallback coordinator and Grok workers run with full access and no approval prompts. The chat organization header is a filter, not authentication; deploy trusted ingress before exposing chat. See [security and operations](docs/operations.md).
 
 ## Quickstart
 

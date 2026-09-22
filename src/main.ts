@@ -9,7 +9,7 @@ import { promisify } from "node:util";
 import { Herdr, paneFrom, shellQuote } from "./herdr.ts";
 import { createCodePatServer } from "./http.ts";
 import { Runtime } from "./runtime.ts";
-import { type Job, record, State, textField } from "./state.ts";
+import { type Job, record, State, textField, type WorkerKind } from "./state.ts";
 
 const turnTimeout = turnTimeouts();
 const source = dirname(fileURLToPath(import.meta.url));
@@ -38,6 +38,10 @@ const repositories = record(
 );
 if (Object.values(repositories).some((value) => typeof value !== "string"))
   throw new Error("Repository paths must be strings");
+// Offer a worker kind only when its CLI runs on this host; install one, then restart.
+const workerKinds: WorkerKind[] = [];
+for (const kind of ["codex", "claude", "grok"] as const)
+  if (await exec(kind, ["--version"], { timeout: 10_000 }).then(() => true, () => false)) workerKinds.push(kind);
 const runtime = new Runtime(state, herdr, {
   dataDir,
   cliPath: join(source, "cli.ts"),
@@ -51,6 +55,7 @@ const runtime = new Runtime(state, herdr, {
   workerIdleMs,
   reviewIntervalMs: process.env.CODEPAT_REVIEW_INTERVAL_MS === undefined ? undefined : Number(process.env.CODEPAT_REVIEW_INTERVAL_MS),
   repositories: repositories as Record<string, string>,
+  workerKinds,
 });
 const server = createCodePatServer({
   organizationId: process.env.CODEPAT_ORGANIZATION_ID ?? "",
