@@ -39,8 +39,12 @@ export function recognizedDialog(text: string): { action: string; selected: stri
     const end = bottomBorder >= 0 && bottomBorder < prompt ? bottomBorder : prompt;
     const boxLines = lines.slice(boxStart + 1, end);
     if (!boxLines.length || boxLines.some(line => line.trim() && !/^[│|]/.test(line))) return undefined;
-    const content = boxLines.map(line => line.replace(/^[│|]/, "").replace(/^ /, "").replace(/ │\s*$/u, "").replace(/│\s*$/u, "")).filter(line => line.trim());
-    if (!content.length) return undefined;
+    const content = boxLines.map(line => {
+      let value = line.replace(/^[│|]/, "").replace(/^ /, "");
+      if (bordered) value = value.replace(/ │\s*$/u, "").replace(/│\s*$/u, "");
+      return value;
+    });
+    if (!content.some(line => line.trim())) return undefined;
     action = canonical(content.join("\n"));
     block = lines.slice(boxStart);
   } else {
@@ -63,7 +67,7 @@ export function recognizedDialog(text: string): { action: string; selected: stri
       if (!first) return undefined;
       const continuation = lines.slice(commandStart! + 1, prompt ?? lines.length);
       if (continuation.some(line => line.trim() && !/^\s+(?:[^❯>›]|$)/u.test(line))) return undefined;
-      const commandLines = [first[1], ...continuation.filter(line => line.trim()).map(line => line.trim())];
+      const commandLines = [first[1], ...continuation];
       action = canonical(commandLines.join("\n"));
     }
   }

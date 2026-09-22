@@ -44,10 +44,10 @@ function recordHold(f: ReturnType<typeof fixture>, actionDigest = "a".repeat(64)
 test("provider dialog parser uses one trailing block and exact one-time options", () => {
   assert.deepEqual(recognizedDialog("Action: npm test\nDo you want to proceed?\n❯ 1. Yes"), { action: "npm test", selected: "yes" });
   const multiline = "$ npm test \\" + "\n  && echo done\nDo you want to proceed?\n❯ 1. Yes";
-  assert.deepEqual(recognizedDialog(multiline), { action: "npm test \\" + "\n&& echo done", selected: "yes" });
-  assert.deepEqual(recognizedDialog("│ Bash command │\n│ git push --force origin main │\nDo you want to proceed?\n❯ 1. Yes"), { action: "git push --force origin main", selected: "yes" });
+  assert.deepEqual(recognizedDialog(multiline), { action: "npm test \\" + "\n  && echo done", selected: "yes" });
+  assert.deepEqual(recognizedDialog("│ Bash command │\n│ git push --force origin main\nDo you want to proceed?\n❯ 1. Yes"), { action: "git push --force origin main", selected: "yes" });
   assert.deepEqual(recognizedDialog("╭────╮\n│ Bash command │\n│ git status │\n╰────╯\nTip: auto mode handles these prompts for you\nThis command requires approval\nDo you want to proceed?\n❯ 1. Yes"), { action: "git status", selected: "yes" });
-  assert.deepEqual(recognizedDialog("│ Bash command │\n│ cat notes.txt | │\nDo you want to proceed?\n❯ 1. Yes"), { action: "cat notes.txt |", selected: "yes" });
+  assert.deepEqual(recognizedDialog("│ Bash command │\n│ cat notes.txt |\nDo you want to proceed?\n❯ 1. Yes"), { action: "cat notes.txt |", selected: "yes" });
   assert.notDeepEqual(recognizedDialog("│ Bash command │\n│ printf 'a  b' │\nDo you want to proceed?\n❯ 1. Yes"), recognizedDialog("│ Bash command │\n│ printf 'a b' │\nDo you want to proceed?\n❯ 1. Yes"));
   assert.equal(recognizedDialog("Action: npm test\nDo you want to proceed?\n❯ 1. Yes, allow all edits during this session"), undefined);
   assert.equal(recognizedDialog("Action: npm test\n❯ 1. Yes\n❯ 2. No"), undefined);
@@ -56,7 +56,7 @@ test("provider dialog parser uses one trailing block and exact one-time options"
   assert.equal(recognizedDialog("│ Bash command\n│ npm test\n╰────╯\nrm -rf ~/workspaces\nDo you want to proceed?\n❯ 1. Yes"), undefined);
   assert.equal(recognizedDialog("╭────╮\n│ Bash command │\n│ npm test │\n╰────╯\nTip: rm -rf ~/workspaces\nDo you want to proceed?\n❯ 1. Yes"), undefined);
   assert.deepEqual(recognizedDialog("╭────╮\n│ Bash command │\n│ printf \"header │\n│    indented body\" │\n╰────╯\nDo you want to proceed?\n❯ 1. Yes"), { action: "printf \"header\n   indented body\"", selected: "yes" });
-  assert.deepEqual(recognizedDialog("$ npm test\n│ Bash command │\n│ rm -rf ~/workspaces │\nDo you want to proceed?\n❯ 1. Yes"), { action: "rm -rf ~/workspaces", selected: "yes" });
+  assert.deepEqual(recognizedDialog("$ npm test\n│ Bash command │\n│ rm -rf ~/workspaces\nDo you want to proceed?\n❯ 1. Yes"), { action: "rm -rf ~/workspaces", selected: "yes" });
 });
 test("routine approval requires recorded provenance and is idempotent", async () => {
   const f = fixture();

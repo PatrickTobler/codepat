@@ -64,7 +64,7 @@ test('Runtime.control approves only the exact one-time selected provider option'
 test('Runtime.control binds Claude box action and rejects stale recognized prefixes',async t=>{
   const f=await fixture(t);const current=f.state.get<Worker>("workers",f.w.id)!;current.taskId='task';f.state.put('workers',current.id,current);const hold=f.state.get<WorkerHold>('workerHolds',current.holdId!)!;hold.taskId='task';f.state.put('workerHolds',hold.id,hold);
   f.runtime.api=async()=>({data:{ownerId:'owner',organizationId:'org',assigneeId:'coworker',status:'RUNNING'}});
-  const box='│ Bash command │\n│ git push --force origin main │\nDo you want to proceed?\n❯ 1. Yes';
+  const box='│ Bash command │\n│ git push --force origin main\nDo you want to proceed?\n❯ 1. Yes';
   f.runtime.herdr.call=async(args)=>args[1]==='read'?{text:'$ npm test\n'+box}:{};
   await assert.rejects(f.call('record-worker-hold',{...f.evidence,actionText:'npm test',dialogFingerprint:createHash('sha256').update('$ npm test\n'+box).digest('hex')}),/does not match/);
   const g=await fixture(t);const currentG=g.state.get<Worker>("workers",g.w.id)!;currentG.taskId='task';g.state.put('workers',currentG.id,currentG);const gh=g.state.get<WorkerHold>('workerHolds',currentG.holdId!)!;gh.taskId='task';g.state.put('workerHolds',gh.id,gh);g.runtime.api=async()=>({data:{ownerId:'owner',organizationId:'org',assigneeId:'coworker',status:'RUNNING'}});g.runtime.herdr.call=async(args)=>args[1]==='read'?{text:box}:{};
@@ -78,11 +78,23 @@ test('Runtime.control binds Claude box action and rejects stale recognized prefi
 });
 test('Runtime.control preserves trailing shell pipes and quoted whitespace in the action receipt',async t=>{
   const f=await fixture(t);const current=f.state.get<Worker>("workers",f.w.id)!;current.taskId='task';f.state.put('workers',current.id,current);const hold=f.state.get<WorkerHold>('workerHolds',current.holdId!)!;hold.taskId='task';f.state.put('workerHolds',hold.id,hold);f.runtime.api=async()=>({data:{ownerId:'owner',organizationId:'org',assigneeId:'coworker',status:'RUNNING'}});
-  const recorded='│ Bash command │\n│ cat notes.txt │\nDo you want to proceed?\n❯ 1. Yes';
+  const recorded='│ Bash command │\n│ cat notes.txt\nDo you want to proceed?\n❯ 1. Yes';
   f.runtime.herdr.call=async(args)=>args[1]==='read'?{text:recorded}:{};
   const evidence={...f.evidence,actionText:'cat notes.txt',dialogFingerprint:createHash('sha256').update(recorded).digest('hex')};await f.call('record-worker-hold',evidence);
-  const changed='│ Bash command │\n│ cat notes.txt | │\nDo you want to proceed?\n❯ 1. Yes';f.runtime.herdr.call=async(args)=>args[1]==='read'?{text:changed}:{};
+  const changed='│ Bash command │\n│ cat notes.txt |\nDo you want to proceed?\n❯ 1. Yes';f.runtime.herdr.call=async(args)=>args[1]==='read'?{text:changed}:{};
   await assert.rejects(f.runtime.control('worker-approve-routine',{jobId:f.job.id,workerId:f.w.id,evidence:{...evidence,routine:true,category:'tests',key:'enter',authorizationReference:'owner request',actionText:'cat notes.txt |',dialogFingerprint:createHash('sha256').update(changed).digest('hex')} }),/does not match/);
+});
+test('Runtime.control refuses command-significant blank-line changes on both paths',async t=>{
+  const f=await fixture(t);const current=f.state.get<Worker>("workers",f.w.id)!;current.taskId='task';f.state.put('workers',current.id,current);const hold=f.state.get<WorkerHold>('workerHolds',current.holdId!)!;hold.taskId='task';f.state.put('workerHolds',hold.id,hold);f.runtime.api=async()=>({data:{ownerId:'owner',organizationId:'org',assigneeId:'coworker',status:'RUNNING'}});
+  const dollar='$ echo safe \\\n  rm -rf ~/workspaces\nDo you want to proceed?\n❯ 1. Yes';f.runtime.herdr.call=async(args)=>args[1]==='read'?{text:dollar}:{};
+  const dollarEvidence={...f.evidence,actionText:'echo safe \\\n  rm -rf ~/workspaces',dialogFingerprint:createHash('sha256').update(dollar).digest('hex')};await f.call('record-worker-hold',dollarEvidence);
+  const changedDollar='$ echo safe \\\n\n  rm -rf ~/workspaces\nDo you want to proceed?\n❯ 1. Yes';f.runtime.herdr.call=async(args)=>args[1]==='read'?{text:changedDollar}:{};
+  await assert.rejects(f.runtime.control('worker-approve-routine',{jobId:f.job.id,workerId:f.w.id,evidence:{...dollarEvidence,routine:true,category:'tests',key:'enter',authorizationReference:'owner request',actionText:'echo safe \\\n\n  rm -rf ~/workspaces',dialogFingerprint:createHash('sha256').update(changedDollar).digest('hex')} }),/does not match/);
+  const g=await fixture(t);const currentG=g.state.get<Worker>("workers",g.w.id)!;currentG.taskId='task';g.state.put('workers',currentG.id,currentG);const gh=g.state.get<WorkerHold>('workerHolds',currentG.holdId!)!;gh.taskId='task';g.state.put('workerHolds',gh.id,gh);g.runtime.api=async()=>({data:{ownerId:'owner',organizationId:'org',assigneeId:'coworker',status:'RUNNING'}});
+  const box='│ Bash command │\n│ echo safe \\\n│   rm -rf ~/workspaces\nDo you want to proceed?\n❯ 1. Yes';g.runtime.herdr.call=async(args)=>args[1]==='read'?{text:box}:{};
+  const boxEvidence={...g.evidence,actionText:'echo safe \\\n  rm -rf ~/workspaces',dialogFingerprint:createHash('sha256').update(box).digest('hex')};await g.call('record-worker-hold',boxEvidence);
+  const changedBox='│ Bash command │\n│ echo safe \\\n│\n│   rm -rf ~/workspaces\nDo you want to proceed?\n❯ 1. Yes';g.runtime.herdr.call=async(args)=>args[1]==='read'?{text:changedBox}:{};
+  await assert.rejects(g.runtime.control('worker-approve-routine',{jobId:g.job.id,workerId:g.w.id,evidence:{...boxEvidence,routine:true,category:'tests',key:'enter',authorizationReference:'owner request',actionText:'echo safe \\\n\n  rm -rf ~/workspaces',dialogFingerprint:createHash('sha256').update(changedBox).digest('hex')} }),/does not match/);
 });
 test('denial/cancellation retires exact queued instructions and stops without replaying the denied action',async t=>{
   for(const decision of ['denied','cancelled']){
