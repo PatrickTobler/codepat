@@ -72,6 +72,9 @@ test('Runtime.control binds Claude box action and rejects stale recognized prefi
   await g.call('record-worker-hold',recordEvidence);
   const routine={...recordEvidence,routine:true,category:'tests',key:'enter',authorizationReference:'owner request'};
   const result=await g.runtime.control('worker-approve-routine',{jobId:g.job.id,workerId:g.w.id,evidence:routine}) as {status:string};assert.equal(result.status,'accepted');
+  const h=await fixture(t);const currentH=h.state.get<Worker>("workers",h.w.id)!;currentH.taskId='task';h.state.put('workers',currentH.id,currentH);const hh=h.state.get<WorkerHold>('workerHolds',currentH.holdId!)!;hh.taskId='task';h.state.put('workerHolds',hh.id,hh);h.runtime.api=async()=>({data:{ownerId:'owner',organizationId:'org',assigneeId:'coworker',status:'RUNNING'}});
+  const bottomOnly='│ Bash command\n│ npm test\n╰────╯\nrm -rf ~/workspaces\nDo you want to proceed?\n❯ 1. Yes';h.runtime.herdr.call=async(args)=>args[1]==='read'?{text:bottomOnly}:{};
+  await assert.rejects(h.call('record-worker-hold',{...h.evidence,actionText:'npm test',dialogFingerprint:createHash('sha256').update(bottomOnly).digest('hex')}),/format|does not match/);
 });
 test('Runtime.control preserves trailing shell pipes and quoted whitespace in the action receipt',async t=>{
   const f=await fixture(t);const current=f.state.get<Worker>("workers",f.w.id)!;current.taskId='task';f.state.put('workers',current.id,current);const hold=f.state.get<WorkerHold>('workerHolds',current.holdId!)!;hold.taskId='task';f.state.put('workerHolds',hold.id,hold);f.runtime.api=async()=>({data:{ownerId:'owner',organizationId:'org',assigneeId:'coworker',status:'RUNNING'}});

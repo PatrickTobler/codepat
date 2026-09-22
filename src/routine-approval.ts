@@ -29,14 +29,17 @@ export function recognizedDialog(text: string): { action: string; selected: stri
   let action: string | undefined;
   let block: string[];
   if (boxStart !== undefined && prompt !== undefined) {
-    const topBorder = lines.slice(0, boxStart).findLastIndex(line => /^\s*[╭┌].*[╮┐]\s*$/u.test(line));
+    const topBorder = boxStart > 0 && /^\s*[╭┌].*[╮┐]\s*$/u.test(lines[boxStart - 1]) ? boxStart - 1 : -1;
     const bottomBorder = lines.findIndex((line, index) => index > boxStart && /^\s*[╰└].*[╯┘]\s*$/u.test(line));
     const bordered = topBorder >= 0;
-    if (bordered && (bottomBorder < 0 || (prompt > bottomBorder && lines.slice(bottomBorder + 1, prompt).some(line => line.trim() && !/^(?:Tip:|This command requires approval|Description:)/i.test(line.trim()))))) return undefined;
+    if (bottomBorder >= 0 && !bordered) return undefined;
+    if (bordered && (bottomBorder < 0 || bottomBorder > prompt)) return undefined;
+    const providerMetadata = new Set(["Tip: auto mode handles these prompts for you", "This command requires approval"]);
+    if (bottomBorder >= 0 && lines.slice(bottomBorder + 1, prompt).some(line => line.trim() && !providerMetadata.has(line.trim()))) return undefined;
     const end = bottomBorder >= 0 && bottomBorder < prompt ? bottomBorder : prompt;
     const boxLines = lines.slice(boxStart + 1, end);
     if (!boxLines.length || boxLines.some(line => line.trim() && !/^[│|]/.test(line))) return undefined;
-    const content = boxLines.map(line => line.replace(/^[│|]\s?/, "").replace(/\s*│\s*$/, "").trim()).filter(Boolean);
+    const content = boxLines.map(line => line.replace(/^[│|]/, "").replace(/^ /, "").replace(/ │\s*$/u, "").replace(/│\s*$/u, "")).filter(line => line.trim());
     if (!content.length) return undefined;
     action = canonical(content.join("\n"));
     block = lines.slice(boxStart);
