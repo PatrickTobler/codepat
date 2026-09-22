@@ -1,5 +1,6 @@
 import {createHash,randomUUID} from 'node:crypto';
 import {State,record,textField,type Worker,type Conversation,type Delivery,type Outbox} from './state.ts';
+import {canonicalActionText} from './action-text.ts';
 export interface WorkerHold {
   id:string;workerId:string;generation:number;paneId:string;taskId?:string;
   conversationId:string;owner:string;organization:string;createdAt:number;
@@ -27,7 +28,7 @@ export class WorkerHolds {
     const digest=textField(e,'actionDigest'),reference=textField(e,'evidenceReference'),actionText=typeof e.actionText==='string'?e.actionText:'';
     if(!/^[a-f0-9]{64}$/.test(digest) || reference.length>1000 || actionText.length>2000)throw new Error('Exact action digest and bounded private evidence reference required');
     if(h.actionDigest && (h.actionDigest!==digest || h.evidenceReference!==reference))throw new Error('Recorded action evidence cannot be replaced');
-    const actionTextDigest=actionText ? createHash('sha256').update(actionText.trim().replace(/\r\n/g,'\n').replace(/[ \t]+/g,' ')).digest('hex') : undefined;
+    const actionTextDigest=actionText ? createHash('sha256').update(canonicalActionText(actionText)).digest('hex') : undefined;
     if(h.actionDigest && (h.actionTextDigest!==actionTextDigest && actionTextDigest))throw new Error('Recorded action evidence cannot be replaced');
     h.actionDigest=digest;if(actionTextDigest)h.actionTextDigest=actionTextDigest;h.evidenceReference=reference;h.recordedByJob=jobId;
     this.state.put('workerHolds',h.id,h);return {ok:true,holdId:h.id,actionDigest:digest};

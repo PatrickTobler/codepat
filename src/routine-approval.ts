@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { State, record, textField, type Conversation, type Job, type Worker } from "./state.ts";
 import { WorkerHolds } from "./worker-holds.ts";
 import type { Agent, HerdrPort } from "./herdr.ts";
+import { canonicalActionText } from "./action-text.ts";
 
 export interface RoutineApprovalRuntime {
   state: State;
@@ -13,7 +14,7 @@ export interface RoutineApprovalRuntime {
 
 const categories = new Set(["read-only", "tests", "dependency-install"]);
 const digest = /^[a-f0-9]{64}$/;
-export const canonical = (value: string) => value.replace(/\r\n/g, "\n").trim();
+export const canonical = canonicalActionText;
 const oneTimeOptions = new Set(["yes", "allow", "approve", "continue", "run", "accept"]);
 function selectedOption(line: string): string | undefined {
   if (!/^(?:❯|>|›)\s*/u.test(line) && !/\(SELECTED\)\s*$/i.test(line)) return undefined;
@@ -41,7 +42,9 @@ export function recognizedDialog(text: string): { action: string; selected: stri
     if (!boxLines.length || boxLines.some(line => line.trim() && !/^[│|]/.test(line))) return undefined;
     const content = boxLines.map(line => {
       let value = line.replace(/^[│|]/, "").replace(/^ /, "");
-      if (bordered) value = value.replace(/ │\s*$/u, "").replace(/│\s*$/u, "");
+      if (bordered && /│\s*$/u.test(value)) {
+        value = / │\s*$/u.test(value) ? value.replace(/ │\s*$/u, "") : value.slice(0, -1);
+      }
       return value;
     });
     if (!content.some(line => line.trim())) return undefined;
