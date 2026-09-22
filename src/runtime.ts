@@ -1208,7 +1208,7 @@ export class Runtime implements ChatService {
   }
   reportTask(id: string, comment: string, status?: string, reviewNotification = false): string {
     const tracked=[...new Set(this.state.all<Worker>("workers").filter(w=>w.taskId===id).map(w=>w.conversationId))];
-    return this.outbox(
+    const notificationId=this.outbox(
       `/tasks/${encodeURIComponent(id)}/events`,
       {
         comment,
@@ -1217,6 +1217,10 @@ export class Runtime implements ChatService {
       this.state.get<string>("taskConversations", id) ?? (tracked.length===1 ? tracked[0] : undefined),
       reviewNotification,
     );
+    const item=this.state.get<Outbox>("outbox",notificationId)!;
+    if(status)item.requestedTaskStatus=status;
+    this.state.put("outbox",notificationId,item);
+    return notificationId;
   }
   async api(
     path: string,

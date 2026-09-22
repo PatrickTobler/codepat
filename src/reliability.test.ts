@@ -47,16 +47,22 @@ function fixture() {
 test("uncertain task delivery reconciles committed result without replay", async () => {
   const f = fixture();
   try {
+    const conversation = f.runtime.createConversation("owner", {
+      sokosumi_organization_id: "org",
+    });
+    f.state.put("taskConversations", "task-1", conversation.id);
     f.runtime.reportTask("task-1", "verified result", "COMPLETED");
     let posts = 0;
     let committed: unknown;
-    f.runtime.api = async (_path, method, body) => {
+    f.runtime.api = async (path, method, body) => {
       if (method === "POST") {
         posts++;
         committed = body;
         throw new Error("response lost after commit");
       }
-      return { data: [{ ...(committed as object), coworkerId: "codepat" }] };
+      return path.endsWith("/events")
+        ? { data: [{ ...(committed as object), coworkerId: "codepat" }] }
+        : { data: { ownerId: "owner", organizationId: "org", assigneeId: "codepat", status: "RUNNING" } };
     };
     await f.runtime.flushOutbox();
     const item = f.state.all<Outbox>("outbox")[0];

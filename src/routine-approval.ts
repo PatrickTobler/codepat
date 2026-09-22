@@ -13,6 +13,14 @@ export interface RoutineApprovalRuntime {
 
 const categories = new Set(["read-only", "tests", "dependency-install"]);
 const digest = /^[a-f0-9]{64}$/;
+const canonical = (value: string) => value.trim().replace(/\r\n/g, "\n").replace(/[ \t]+/g, " ");
+function recognizedDialog(text: string): { action: string; selected: string } | undefined {
+  const lines = canonical(text).split("\n");
+  const action = lines.find(line => /^(?:action|command|request):\s*.+$/i.test(line))?.replace(/^(?:action|command|request):\s*/i, "");
+  const selected = lines.find(line => /\(SELECTED\)\s*$/i.test(line) || /^>\s*/.test(line))?.replace(/^>\s*/, "").replace(/\s*\(SELECTED\)\s*$/i, "").trim();
+  if (!action || !selected) return undefined;
+  return { action: canonical(action), selected: canonical(selected) };
+}
 
 /** Approve one inspected, task-authorized dialog. This is deliberately not a generic key sender. */
 export async function approveRoutine(
@@ -36,9 +44,8 @@ export async function approveRoutine(
   const reference = textField(evidence, "authorizationReference");
   const category = textField(evidence, "category");
   const key = textField(evidence, "key");
-  const focusedKey = textField(evidence, "focusedKey");
   const dialogFingerprint = textField(evidence, "dialogFingerprint");
-  if (evidence.routine !== true || !categories.has(category) || key !== "enter" || focusedKey !== "enter" ||
+  if (evidence.routine !== true || !categories.has(category) || key !== "enter" ||
       !digest.test(actionDigest) || !digest.test(dialogFingerprint) || !reference || reference.length > 1000)
     throw new Error("Routine approval needs a bounded authorized category, exact dialog fingerprint, and enter key");
   const hold = worker.holdId ? runtime.state.get<import("./worker-holds.ts").WorkerHold>("workerHolds", worker.holdId) : undefined;
@@ -50,14 +57,18 @@ export async function approveRoutine(
   runtime.assertTaskOwner(task, conversation);
   const receiptId = createHash("sha256").update(JSON.stringify([worker.id, worker.generation ?? 0, worker.paneId, actionDigest])).digest("hex");
   const prior = runtime.state.get<{status: string}>("routineApprovals", receiptId);
-  if (prior?.status === "accepted") return { status: "accepted", receiptId, workerId: worker.id };
+  if (prior?.status === "accepted") return { status: "accepted", keySent: false, receiptId, workerId: worker.id, note: "This approval receipt was already accepted; no key was replayed." };
   if (prior?.status === "sending" || prior?.status === "uncertain") throw new Error("Approval outcome is uncertain; inspect before retrying");
   const live = await runtime.workerAgent(worker);
   if (!live || live.agent_status !== "blocked") throw new Error("The exact owned worker dialog is no longer blocked");
   const dialog = await runtime.herdr.call(["agent", "read", worker.paneId, "--source", "recent-unwrapped", "--lines", "80"]);
   const dialogText = typeof dialog.text === "string" ? dialog.text : JSON.stringify(dialog);
+  const parsed = recognizedDialog(dialogText);
+  if (!parsed || !/^(?:yes|allow|approve|continue|run|accept)\b/i.test(parsed.selected)) throw new Error("The worker dialog format or selected option is not recognized as a routine approval");
   const observedFingerprint = createHash("sha256").update(dialogText).digest("hex");
   if (observedFingerprint !== dialogFingerprint) throw new Error("The inspected worker dialog changed; no approval key sent");
+  const observedActionDigest = createHash("sha256").update(canonical(parsed.action)).digest("hex");
+  if (!hold.actionTextDigest || observedActionDigest !== hold.actionTextDigest) throw new Error("The live dialog action does not match the recorded routine action");
   const current = runtime.state.get<Worker>("workers", worker.id);
   if (!current || current.paneId !== worker.paneId || current.generation !== worker.generation)
     throw new Error("Worker identity changed during approval");

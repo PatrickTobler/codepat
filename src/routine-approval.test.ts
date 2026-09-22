@@ -20,7 +20,7 @@ function fixture() {
   const calls: string[][] = [];
   const runtime = {
     state,
-    herdr: { call: async (args: string[]) => { calls.push(args); return args[1] === "read" ? { text: "synthetic dialog" } : {}; }, agents: async () => [{ pane_id: "pane", agent_status: "blocked", name: "worker", cwd: dir }], prompt: async () => {} },
+    herdr: { call: async (args: string[]) => { calls.push(args); return args[1] === "read" ? { text: "Action: npm test\n> Yes (SELECTED)" } : {}; }, agents: async () => [{ pane_id: "pane", agent_status: "blocked", name: "worker", cwd: dir }], prompt: async () => {} },
     workerAgent: async () => ({ pane_id: "pane", agent_status: "blocked", name: "worker", cwd: dir }),
     assertAssigned: async () => ({ ownerId: "owner", organizationId: "org", assigneeId: "coworker", status: "RUNNING" }),
     assertTaskOwner: () => {},
@@ -28,7 +28,7 @@ function fixture() {
   return { dir, state, conversation, job, worker, runtime, calls };
 }
 function evidence(digest = "a".repeat(64)) {
-  return { routine: true, category: "tests", key: "enter", focusedKey: "enter", actionDigest: digest, dialogFingerprint: createHash("sha256").update("synthetic dialog").digest("hex"), authorizationReference: "task request" };
+  return { routine: true, category: "tests", key: "enter", actionDigest: digest, actionText: "npm test", dialogFingerprint: createHash("sha256").update("Action: npm test\n> Yes (SELECTED)").digest("hex"), authorizationReference: "task request" };
 }
 function recordHold(f: ReturnType<typeof fixture>, actionDigest = "a".repeat(64)) {
   const holds = new WorkerHolds(f.state);
@@ -39,7 +39,7 @@ function recordHold(f: ReturnType<typeof fixture>, actionDigest = "a".repeat(64)
   const current = f.state.all<import("./worker-holds.ts").WorkerHold>("workerHolds").at(-1)!;
   f.worker.holdId = current.id; f.worker.recoveryHold = true;
   f.state.put("workers", f.worker.id, f.worker);
-  holds.recordAction(f.worker, f.conversation, { holdId: current.id, generation: 1, paneId: "pane", actionDigest, evidenceReference: "dialog" }, f.job.id);
+    holds.recordAction(f.worker, f.conversation, { holdId: current.id, generation: 1, paneId: "pane", actionDigest, actionText: "npm test", evidenceReference: "dialog" }, f.job.id);
 }
 test("routine approval requires recorded provenance and is idempotent", async () => {
   const f = fixture();
@@ -50,6 +50,7 @@ test("routine approval requires recorded provenance and is idempotent", async ()
     assert.deepEqual(f.calls, [["agent", "read", "pane", "--source", "recent-unwrapped", "--lines", "80"], ["agent", "send-keys", "pane", "enter"]]);
     const second = await approveRoutine(f.runtime, f.job, f.worker, evidence());
     assert.equal(second.receiptId, first.receiptId);
+    assert.equal(second.keySent, false);
     assert.equal(f.calls.length, 2);
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
 });
@@ -57,7 +58,7 @@ test("uncertain approval is fail-closed and cannot be replayed", async () => {
   const f = fixture();
   try {
     recordHold(f);
-    f.runtime.herdr.call = async (args: string[]) => { if (args[1] === "read") return { text: "synthetic dialog" }; throw new Error("connection lost"); };
+    f.runtime.herdr.call = async (args: string[]) => { if (args[1] === "read") return { text: "Action: npm test\n> Yes (SELECTED)" }; throw new Error("connection lost"); };
     await assert.rejects(() => approveRoutine(f.runtime, f.job, f.worker, evidence()), /uncertain/);
     await assert.rejects(() => approveRoutine(f.runtime, f.job, f.worker, evidence()), /uncertain/);
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
@@ -73,6 +74,33 @@ test("changed dialog fingerprint is inspected but never approved", async () => {
     recordHold(f);
     await assert.rejects(() => approveRoutine(f.runtime, f.job, f.worker, { ...evidence(), dialogFingerprint: "c".repeat(64) }), /dialog changed/);
     assert.deepEqual(f.calls, [["agent", "read", "pane", "--source", "recent-unwrapped", "--lines", "80"]]);
+  } finally { rmSync(f.dir, { recursive: true, force: true }); }
+});
+test("recognized dialog must match the recorded action and affirmative selection", async () => {
+  const f = fixture();
+  try {
+    recordHold(f);
+    f.runtime.herdr.call = async (args: string[]) =>
+      args[1] === "read"
+        ? { text: "Action: delete production database\n> Yes (SELECTED)" }
+        : {};
+    const changedAction = evidence();
+    changedAction.dialogFingerprint = createHash("sha256")
+      .update("Action: delete production database\n> Yes (SELECTED)")
+      .digest("hex");
+    await assert.rejects(() => approveRoutine(f.runtime, f.job, f.worker, changedAction), /action does not match/);
+    assert.equal(f.calls.some((args) => args[1] === "send-keys"), false);
+
+    f.runtime.herdr.call = async (args: string[]) =>
+      args[1] === "read"
+        ? { text: "Action: npm test\n> No (SELECTED)" }
+        : {};
+    const declined = evidence();
+    declined.dialogFingerprint = createHash("sha256")
+      .update("Action: npm test\n> No (SELECTED)")
+      .digest("hex");
+    await assert.rejects(() => approveRoutine(f.runtime, f.job, f.worker, declined), /format or selected option/);
+    assert.equal(f.calls.some((args) => args[1] === "send-keys"), false);
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
 });
 test("owned worker event can use standing routine authorization without a new chat", async () => {
