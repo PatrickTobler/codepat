@@ -4,7 +4,7 @@ import { isAbsolute } from "node:path";
 import type { Api } from "./projects.ts";
 import { record, State, textField } from "./state.ts";
 
-export interface ContactScope { userId: string; organizationId: string }
+export interface ContactScope { userId: string; organizationId: string; conversationId?: string }
 export interface ContactConfig {
   apiUrl: string;
   apiKey?: string;

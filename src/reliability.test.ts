@@ -47,16 +47,22 @@ function fixture() {
 test("uncertain task delivery reconciles committed result without replay", async () => {
   const f = fixture();
   try {
+    const conversation = f.runtime.createConversation("owner", {
+      sokosumi_organization_id: "org",
+    });
+    f.state.put("taskConversations", "task-1", conversation.id);
     f.runtime.reportTask("task-1", "verified result", "COMPLETED");
     let posts = 0;
     let committed: unknown;
-    f.runtime.api = async (_path, method, body) => {
+    f.runtime.api = async (path, method, body) => {
       if (method === "POST") {
         posts++;
         committed = body;
         throw new Error("response lost after commit");
       }
-      return { data: [{ ...(committed as object), coworkerId: "codepat" }] };
+      return path.endsWith("/events")
+        ? { data: [{ ...(committed as object), coworkerId: "codepat" }] }
+        : { data: { ownerId: "owner", organizationId: "org", assigneeId: "codepat", status: "RUNNING" } };
     };
     await f.runtime.flushOutbox();
     const item = f.state.all<Outbox>("outbox")[0];
@@ -105,18 +111,18 @@ test("missing worker resumes same worktree and task with reconciled instruction 
     assert.equal(saved.worktree, worktree);
     assert.equal(saved.recoveryAttempts, 1);
     assert.equal(saved.state, "idle");
-    assert.equal(f.state.all<Outbox>("outbox")[0].body.status, "RUNNING");
+    assert.equal(f.state.all<Outbox>("outbox").length, 0); // session preparation is not prompt delivery
     assert.ok(
       f.calls.some(
         (args) => args.includes("resume") && args.includes("--last"),
       ),
     );
     assert.equal(f.state.all("workers").length, 1);
-    assert.ok(
-      f.state
-        .all<{ text: string }>("deliveries")
-        .some((d) => d.text.includes("never repeat an external side effect")),
-    );
+    const deliveries=f.state.all<{text:string;status:string;recoveryNotice?:boolean}>("deliveries");
+    assert.equal(deliveries.length,1);
+    assert.equal(deliveries[0].text,"add a regression test");
+    assert.equal(deliveries[0].status,"queued");
+    assert.equal(deliveries[0].recoveryNotice,true);
   } finally {
     f.close();
   }
@@ -175,6 +181,7 @@ test("Claude workers launch and resume through Herdr with their original kind", 
       createdAt: 0,
       observedAt: 0,
     };
+    f.state.put("workers",w.id,w);
     await f.runtime.launchWorkerSession(w);
     let launch = f.calls.find((a) => a[0] === "agent")!;
     assert.equal(launch[launch.indexOf("--kind") + 1], "claude");
@@ -183,6 +190,7 @@ test("Claude workers launch and resume through Herdr with their original kind", 
     assert.ok(!launch.includes("danger-full-access"));
     f.calls.length = 0;
     w.paneId = undefined;
+    f.state.put("workers",w.id,w);
     await f.runtime.launchWorkerSession(w, true);
     launch = f.calls.find((a) => a[0] === "agent")!;
     assert.equal(launch[launch.indexOf("--kind") + 1], "claude");

@@ -1,4 +1,4 @@
-import { chatTimeoutMs, reconcileDeadTurn } from "./recovery.ts";
+import { turnTimeouts, reconcileDeadTurn } from "./recovery.ts";
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -11,7 +11,7 @@ import { createCodePatServer } from "./http.ts";
 import { Runtime } from "./runtime.ts";
 import { type Job, record, State, textField } from "./state.ts";
 
-const turnTimeout = chatTimeoutMs(process.env.CODEPAT_CHAT_TIMEOUT_MS ?? 600_000);
+const turnTimeout = turnTimeouts();
 const source = dirname(fileURLToPath(import.meta.url));
 const exec = promisify(execFile);
 const dataDir = resolve(
@@ -163,7 +163,7 @@ async function ensureRunner(): Promise<void> {
         });
       }
     }
-    const command = `CODEPAT_CHAT_TIMEOUT_MS=${turnTimeout} CODEPAT_CONFIG=${shellQuote(join(dataDir, "client.json"))} ${shellQuote(process.execPath)} ${shellQuote(join(source, "runner.ts"))}`;
+    const command = `CODEPAT_CHAT_TIMEOUT_MS=${turnTimeout.chatMs} CODEPAT_BACKGROUND_TIMEOUT_MS=${turnTimeout.backgroundMs} CODEPAT_CONFIG=${shellQuote(join(dataDir, "client.json"))} ${shellQuote(process.execPath)} ${shellQuote(join(source, "runner.ts"))}`;
     await herdr.call(["pane", "run", pane, command]);
     startedAt = Date.now();
   } finally {

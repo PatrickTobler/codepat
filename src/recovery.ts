@@ -1,12 +1,23 @@
+import { protocolFailureText } from "./turn-failure.ts";
 import { ProgressJournal } from "./progress.ts";
 import { dirname } from "node:path";
 import { existsSync, readFileSync, renameSync, writeFileSync, openSync, closeSync, fsyncSync } from "node:fs";
 
-export function chatTimeoutMs(value: unknown = 600_000): number {
+export function chatTimeoutMs(value: unknown = 3_600_000): number {
   const timeout = Number(value);
   if (!Number.isInteger(timeout) || timeout < 60_000 || timeout > 3_600_000 || timeout % 1000)
     throw new Error("CODEPAT_CHAT_TIMEOUT_MS must be whole seconds between 60000 and 3600000");
   return timeout;
+}
+export function turnTimeouts(env: Record<string, string | undefined> = process.env) {
+  const chatMs = chatTimeoutMs(env.CODEPAT_CHAT_TIMEOUT_MS ?? 3_600_000);
+  let backgroundMs: number;
+  try { backgroundMs = chatTimeoutMs(env.CODEPAT_BACKGROUND_TIMEOUT_MS ?? 3_600_000); }
+  catch { throw new Error("CODEPAT_BACKGROUND_TIMEOUT_MS must be whole seconds between 60000 and 3600000"); }
+  return { chatMs, backgroundMs };
+}
+export function turnDeadlines(kind: string, timeouts: ReturnType<typeof turnTimeouts>) {
+  return deadlines(kind === "chat" ? timeouts.chatMs : timeouts.backgroundMs);
 }
 export function deadlines(timeout: number) {
   return { runtimeSeconds: chatTimeoutMs(timeout) / 1000, stopSeconds: 5, watchdogMs: timeout + 10_000 };
@@ -17,6 +28,7 @@ export interface TurnReceipt {
   launched: boolean;
   threadId?: string;
   completed?: boolean;
+  failure?: string;
 }
 export function saveReceipt(path: string, value: unknown): void {
   writeFileSync(`${path}.tmp`, JSON.stringify(value), { mode: 0o600 });
@@ -55,7 +67,7 @@ export function failureText(kind: string): string {
     recovery_required: "The previous turn stopped without a confirmed completion.",
     recovery_limit: "The bounded recovery limit was reached.",
   };
-  return `${reasons[kind] ?? "The runner could not finish this turn."} Existing workers and actions remain tracked. Inspect completed actions and uncertain deliveries before requesting recovery; do not start duplicate work.`;
+  return `${reasons[kind] ?? protocolFailureText(kind) ?? "The runner could not finish this turn."} Existing workers and actions remain tracked. Inspect completed actions and uncertain deliveries before requesting recovery; do not start duplicate work.`;
 }
 
 // Only the host supervisor calls this after checking the pane process and unit.
@@ -83,8 +95,9 @@ export function reconcileDeadTurn(
         (saved.error !== undefined && typeof saved.error !== "string") || (!saved.error && !saved.text.trim()))) throw new Error("Invalid completion");
     if (turn && (!valid(turn) || typeof turn.launched !== "boolean")) throw new Error("Invalid turn receipt");
     const thread = saved?.threadId ?? turn?.threadId;
-    if (job.kind !== "review" && typeof thread === "string") runtime.state.put("threads", job.conversationId, thread);
+    if (!["review","incident"].includes(job.kind) && typeof thread === "string") runtime.state.put("threads", job.conversationId, thread);
     if (saved) runtime.completeJob(id, saved.text as string, saved.error as string | undefined);
+    else if (typeof turn?.failure === "string" && protocolFailureText(turn.failure)) runtime.completeJob(id, failureText(turn.failure), turn.failure);
     else if (turn?.completed === true && existsSync(`${directory}/${stem}.txt`)) {
       const text = readFileSync(`${directory}/${stem}.txt`, "utf8");
       if (text.trim()) runtime.completeJob(id, text);

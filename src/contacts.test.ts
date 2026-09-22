@@ -251,15 +251,18 @@ test("runtime job control derives identity and rejects overrides/cross-job acces
     await assert.rejects(f.runtime.control("contacts", { jobId: f.job.id, query: "Avery", userId: "other" }), /Unsupported contact/);
     const other = f.runtime.createConversation("other", { sokosumi_organization_id: scope.organizationId });
     const otherJob = f.runtime.createResponse("other", other.id, "unrelated");
+    f.state.put("jobs", otherJob.id, { ...otherJob, status: "in_progress", generation: 0 });
     const token = JSON.parse(readFileSync(f.runtime.scopedConfig({ kind: "job", id: f.job.id }), "utf8")).token;
     assert.equal(f.runtime.authorizeControl(token, "contacts", { jobId: otherJob.id }), false);
-    f.state.put<Worker>("workers", "worker", { id: "worker", generation: 1 } as Worker);
+    f.state.put<Worker>("workers", "worker", { id: "worker", generation: 1, conversationId: f.conversation.id } as Worker);
     const workerToken = JSON.parse(readFileSync(f.runtime.scopedConfig({ kind: "worker", id: "worker", generation: 1 }), "utf8")).token;
     for (const action of ["contacts", "dm-send", "dm-status", "dm-retry"]) {
       assert.equal(f.runtime.authorizeControl(token, action, { jobId: f.job.id }), true);
       assert.equal(f.runtime.authorizeControl(workerToken, action, { jobId: f.job.id }), false);
     }
+    await assert.rejects(f.runtime.control("worker-approve-routine", { jobId: otherJob.id, workerId: "worker", evidence: {} }), /Worker not owned|not active/);
     assert.equal(f.runtime.authorizeControl(workerToken, "worker-result", { workerId: "worker" }), true);
+    assert.equal(f.runtime.authorizeControl(workerToken, "worker-approve-routine", { workerId: "worker", evidence: {} }), false);
     server = createCodePatServer({ organizationId: scope.organizationId, controlToken: "synthetic-master", service: f.runtime,
       authorizeControl: (...args) => f.runtime.authorizeControl(...args), control: (...args) => f.runtime.control(...args) });
     await new Promise<void>(r => server!.listen(0, "127.0.0.1", r));
