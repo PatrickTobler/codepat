@@ -8,6 +8,8 @@ CODEPAT_PORT=3210
 # CODEPAT_COWORKER_ID=replace-with-coworker-id
 # CODEPAT_API_KEY=replace-with-dedicated-coworker-key
 # CODEPAT_REPOSITORIES_JSON={"example":"/absolute/path/to/example"}
+# Only these installed providers may launch or receive new instructions.
+CODEPAT_WORKER_KINDS=codex,claude
 # CODEPAT_WORKER_IDLE_MS=900000
 # HERDR_SOCKET_PATH=/absolute/path/to/herdr.sock
 

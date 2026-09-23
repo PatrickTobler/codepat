@@ -1,3 +1,5 @@
+import { ControlConflict } from "./control-error.ts";
+import { inspectHoldDialog } from "./hold-dialog.ts";
 import {reconcileStartupNotice} from "./startup-notice.ts";
 import {LegacyContinuation} from "./legacy-continuation.ts";
 import {WorkerHolds} from "./worker-holds.ts";
@@ -147,6 +149,7 @@ export class Runtime implements ChatService {
         "worker-continuation-plan",
         "continue-worker-readonly",
         "worker-hold",
+        "inspect-worker-hold",
         "record-worker-hold",
         "reconcile-worker-hold",
         "worker-approve-routine",
@@ -263,9 +266,9 @@ export class Runtime implements ChatService {
     const live = (await this.herdr.agents()).find(
       (agent) => agent.pane_id === worker.paneId,
     );
-    if (live && (live.name !== worker.name || live.cwd !== worker.worktree))
-      throw new Error(
-        "Worker pane belongs to another agent; retained for inspection",
+    if (live && (live.name !== worker.name || live.cwd !== worker.worktree || (live.agent !== undefined && live.agent !== (worker.kind ?? "codex")) || (worker.sessionId !== undefined && live.agent_session_id !== worker.sessionId)))
+      throw new ControlConflict(
+        "Worker pane belongs to another agent or its identity changed; hold and pane retained. Verify the original provider sessionId and inspect-worker-hold before continuing; no key sent",
       );
     return live;
   }
@@ -426,7 +429,7 @@ export class Runtime implements ChatService {
       "--",
       ...(worker.kind === "claude"
         ? [
-            ...(resume ? ["--continue"] : []),
+            ...(resume ? (worker.sessionId ? ["--resume", worker.sessionId] : ["--continue"]) : []),
             "--permission-mode",
             "acceptEdits",
           ]
@@ -439,7 +442,7 @@ export class Runtime implements ChatService {
             "--no-auto-update",
           ]
         : [
-            ...(resume ? ["resume", "--last"] : []),
+            ...(resume ? ["resume", worker.sessionId ?? "--last"] : []),
             "-C",
             worker.worktree,
             "--no-alt-screen",
@@ -450,9 +453,7 @@ export class Runtime implements ChatService {
           ]),
     ]);
     this.guardWorkerRecovery(worker);
-    worker.archivedAt = undefined;
-    worker.idleSince = undefined;
-    this.state.put("workers", worker.id, worker);
+    this.updateRecoveredWorker(worker, {archivedAt: undefined, idleSince: undefined});
   }
   workerHasPendingActivity(worker: Worker): boolean {
     return (
@@ -496,11 +497,7 @@ export class Runtime implements ChatService {
     if (result.panes.some((pane) => record(pane).pane_id === worker.paneId))
       return;
     this.guardWorkerRecovery(worker);
-    worker.paneId = undefined;
-    worker.archivedAt = worker.archiveRequestedAt;
-    worker.archiveRequestedAt = undefined;
-    worker.idleSince = undefined;
-    this.state.put("workers", worker.id, worker);
+    this.updateRecoveredWorker(worker, {paneId: undefined, archivedAt: worker.archiveRequestedAt, archiveRequestedAt: undefined, idleSince: undefined});
   }
   async cleanupWorkers(now = Date.now()): Promise<void> {
     const idleMs = this.config.workerIdleMs ?? 15 * 60_000;
@@ -509,6 +506,8 @@ export class Runtime implements ChatService {
       this.workerOperations.add(snapshot.id);
       const worker = this.state.get<Worker>("workers", snapshot.id)!;
       try {
+        // A disabled/held/uncertain worker must not be changed or starve later cleanup.
+        this.guardWorkerRecovery(worker);
         await this.reconcileArchive(worker);
         if (
           !worker.paneId ||
@@ -530,6 +529,9 @@ export class Runtime implements ChatService {
           this.workerHasPendingActivity(worker)
         )
           continue;
+        if (live.agent && live.agent !== (worker.kind ?? "codex")) continue;
+        if (worker.sessionId && live.agent_session_id !== worker.sessionId) continue;
+        if (live.agent === (worker.kind ?? "codex") && live.agent_session_id) worker.sessionId = live.agent_session_id;
         worker.archiveRequestedAt = now;
         this.state.put("workers", worker.id, worker);
         await this.herdr.call(["pane", "close", worker.paneId]);
@@ -538,20 +540,74 @@ export class Runtime implements ChatService {
         worker.archiveRequestedAt = undefined;
         worker.idleSince = undefined;
         this.state.put("workers", worker.id, worker);
+      } catch (error) {
+        if (!(error instanceof WorkerRecoveryBlocked || error instanceof ControlConflict)) throw error;
+        // Expected per-worker conflicts retain their state for owner inspection.
       } finally {
         this.workerOperations.delete(worker.id);
       }
     }
   }
   guardWorkerRecovery(worker: Worker): void {
+    if (!(this.config.workerKinds ?? ["codex", "claude"]).includes(worker.kind ?? "codex"))
+      throw new WorkerRecoveryBlocked(worker.id, Boolean(worker.recoveryHold), [], "Worker kind is disabled or unavailable on this installation; records retained, no launch or instruction dispatched.");
     const current=this.state.get<Worker>("workers",worker.id);
     const uncertain=this.state.all<Delivery>("deliveries").filter(d=>d.workerId===worker.id && ["sending","uncertain"].includes(d.status)).map(d=>d.id);
     const held=Boolean(current?.recoveryHold || current?.state==="blocked");
-    const changed=!current || current.conversationId!==worker.conversationId || current.generation!==worker.generation || current.paneId!==worker.paneId || current.taskId!==worker.taskId || current.worktree!==worker.worktree;
+    const changed=!current || current.conversationId!==worker.conversationId || current.generation!==worker.generation || current.paneId!==worker.paneId || current.taskId!==worker.taskId || current.worktree!==worker.worktree || current.name!==worker.name || current.kind!==worker.kind || current.sessionId!==worker.sessionId;
     if(held || uncertain.length || changed)throw new WorkerRecoveryBlocked(worker.id,held,uncertain,
       held ? "Human approval/recovery hold retained; no instruction dispatched." : uncertain.length ? "Prior instruction outcome is unresolved; no instruction dispatched." : "Worker identity or generation changed; inspect before continuing.");
   }
-  async wakeWorker(worker: Worker): Promise<void> {
+  updateRecoveredWorker(worker: Worker, patch: Partial<Worker>): void {
+    this.state.transaction(() => {
+      this.guardWorkerRecovery(worker);
+      const current = this.state.get<Worker>("workers", worker.id)!;
+      if (current.archivedAt !== worker.archivedAt || current.archiveRequestedAt !== worker.archiveRequestedAt || current.recoveryEpoch !== worker.recoveryEpoch || current.sessionId !== worker.sessionId)
+        throw new ControlConflict("Worker recovery lifecycle changed; inspect before retrying");
+      const next = {...current, ...patch};
+      if (patch.state === "idle" && current.result) next.state = "completed";
+      this.state.put("workers", worker.id, next);
+      Object.assign(worker, next);
+    });
+  }
+  recoverySessionEvidence(worker: Worker, evidence: unknown): {sessionId: string; sessionEvidenceReference: string} {
+    const e = evidence && typeof evidence === "object" && !Array.isArray(evidence) ? evidence as Record<string,unknown> : {};
+    if (typeof e.sessionId !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9-]{0,199}$/.test(e.sessionId) || e.paneId !== worker.paneId || e.generation !== (worker.generation ?? 0) || typeof e.evidenceReference !== "string" || !e.evidenceReference.trim() || e.evidenceReference.length > 1000)
+      throw new ControlConflict("Archived session continuity is unbound; owner resume requires --recovery-evidence with verified saved sessionId, paneId, generation and private evidenceReference");
+    return {sessionId: e.sessionId, sessionEvidenceReference: e.evidenceReference};
+  }
+  async reconcileArchivedSession(worker: Worker, evidence?: unknown): Promise<boolean> {
+    const owner = this.state.get<Conversation>("conversations", worker.conversationId);
+    if (!owner) throw new ControlConflict("Worker conversation is missing");
+    if (worker.taskId) this.assertTaskOwner(await this.assertAssigned(worker.taskId), owner);
+    const agents = await this.herdr.agents();
+    this.guardWorkerRecovery(worker);
+    const currentOwner = this.state.get<Conversation>("conversations", worker.conversationId);
+    if (currentOwner?.owner !== owner.owner || currentOwner?.metadata.sokosumi_organization_id !== owner.metadata.sokosumi_organization_id)
+      throw new ControlConflict("Worker ownership changed during archived recovery");
+    const candidates = agents.filter(a => a.pane_id === worker.paneId || a.name === worker.name);
+    if (!candidates.length) {
+      if (worker.paneId) throw new ControlConflict("Archived startup outcome is unresolved; inspect the retained pane before retrying");
+      if (!worker.sessionId) this.updateRecoveredWorker(worker, this.recoverySessionEvidence(worker, evidence));
+      return false;
+    }
+    const live = candidates[0];
+    if (candidates.length !== 1 || live.pane_id !== worker.paneId || live.name !== worker.name || live.cwd !== worker.worktree)
+      throw new ControlConflict("Archived session identity cannot be verified; retained for inspection");
+    if (!["idle", "done"].includes(live.agent_status))
+      throw new ControlConflict("Archived session must be at its idle prompt; no launch or instruction sent");
+    // `agent` is provider metadata; names and terminal titles are not kind evidence.
+    if (live.agent !== (worker.kind ?? "codex") || !live.agent_session_id)
+      throw new ControlConflict("Archived provider kind/session metadata is missing or mismatched; no session reused");
+    if (worker.sessionId && worker.sessionId !== live.agent_session_id)
+      throw new ControlConflict("Archived saved session differs from live provider session; no session reused");
+    const binding = worker.sessionId ? {sessionId: worker.sessionId} : this.recoverySessionEvidence(worker, evidence);
+    if (binding.sessionId !== live.agent_session_id)
+      throw new ControlConflict("Attested saved session differs from live provider session; no session reused");
+    this.updateRecoveredWorker(worker, {...binding, archivedAt: undefined, idleSince: undefined});
+    return true;
+  }
+  async wakeWorker(worker: Worker, evidence?: unknown): Promise<void> {
     this.guardWorkerRecovery(worker);
     await this.reconcileArchive(worker);
     this.guardWorkerRecovery(worker);
@@ -563,16 +619,13 @@ export class Runtime implements ChatService {
       this.guardWorkerRecovery(worker);
       // A completed process can disappear without passing through idle cleanup.
       // Retain its old shell and resume in a fresh owned pane.
-      worker.paneId = undefined;
-      worker.archivedAt = Date.now();
-      this.state.put("workers", worker.id, worker);
+      if (!worker.sessionId) this.updateRecoveredWorker(worker, this.recoverySessionEvidence(worker, evidence));
+      this.updateRecoveredWorker(worker, {paneId: undefined, archivedAt: Date.now()});
     }
     this.guardWorkerRecovery(worker);
     if (!worker.archivedAt) return;
-    await this.launchWorkerSession(worker, true);
-    this.guardWorkerRecovery(worker);
-    worker.state = "idle";
-    this.state.put("workers", worker.id, worker);
+    if (!(await this.reconcileArchivedSession(worker, evidence))) await this.launchWorkerSession(worker, true);
+    this.updateRecoveredWorker(worker, {state: "idle", recoveryEpoch: (worker.recoveryEpoch ?? 0) + 1});
   }
   async createWorkerTask(
     worker: Worker,
@@ -716,7 +769,7 @@ export class Runtime implements ChatService {
           continue;
         const live = agents.find((agent) => agent.pane_id === worker.paneId);
         const replaced =
-          live && (live.name !== worker.name || live.cwd !== worker.worktree);
+          live && (live.name !== worker.name || live.cwd !== worker.worktree || (live.agent !== undefined && live.agent !== (worker.kind ?? "codex")) || (worker.sessionId !== undefined && live.agent_session_id !== worker.sessionId));
         const state = replaced
           ? "recovery_blocked"
           : ["stopped", "recovery_blocked"].includes(worker.state)
@@ -725,6 +778,8 @@ export class Runtime implements ChatService {
               ? "completed"
               : (live?.agent_status ?? "missing");
         const previous = worker.state;
+        if (!worker.archivedAt && !worker.sessionId && !replaced && live?.agent === (worker.kind ?? "codex") && live.agent_session_id)
+          worker.sessionId = live.agent_session_id;
         worker.state = state;
         if (state === "blocked" || (previous === "blocked" && state !== "working")) {
           const c=this.state.get<Conversation>("conversations",worker.conversationId);
@@ -1873,14 +1928,19 @@ export class Runtime implements ChatService {
       textField(body, "workerId"),
     );
     if (!worker || !this.ownsWorker(job, worker))
-      throw new Error("Worker not owned by this user");
+      throw new ControlConflict("Worker not owned by this user");
     if (action === "worker-approve-routine") {
       if (!((job.kind === "chat" && job.status === "in_progress") || (job.kind === "worker" && job.workerId === worker.id)))
-        throw new Error("Routine approval requires the exact active owner chat or claimed worker event");
-      if (this.workerOperations.has(worker.id)) throw new Error("Worker operation in progress");
+        throw new ControlConflict("Routine approval requires the exact active owner chat or claimed worker event");
+      if (this.workerOperations.has(worker.id)) throw new ControlConflict("Worker operation in progress; inspect the current receipt before retrying");
       this.workerOperations.add(worker.id);
       try {
+        if (!(this.config.workerKinds ?? ["codex", "claude"]).includes(worker.kind ?? "codex"))
+          throw new ControlConflict("Worker kind is disabled or unavailable; no approval key sent");
         return await approveRoutine(this, job, worker, body.evidence, job.kind === "worker");
+      } catch (error) {
+        if (error instanceof ControlConflict) throw error;
+        throw new ControlConflict("Routine approval verification failed; check task ownership, Herdr availability and the durable approval receipt before retrying");
       } finally {
         this.workerOperations.delete(worker.id);
       }
@@ -1899,48 +1959,83 @@ export class Runtime implements ChatService {
       try{return await continuation.run(job,worker.id,record(body.evidence));}
       finally{this.workerOperations.delete(worker.id);}
     }
-    if (["worker-hold","record-worker-hold","reconcile-worker-hold"].includes(action)) {
-      if(job.kind!=="chat")throw new Error("Hold reconciliation requires an active owner chat, not autonomous work");
-      if(worker.conversationId!==job.conversationId)throw new Error("Hold requires the exact owning conversation");
+    if (["worker-hold","inspect-worker-hold","record-worker-hold","reconcile-worker-hold"].includes(action)) {
+      if(job.kind!=="chat")throw new ControlConflict("Hold reconciliation requires an active owner chat, not autonomous work");
+      if(worker.conversationId!==job.conversationId)throw new ControlConflict("Hold requires the exact owning conversation");
       const c=this.state.get<Conversation>("conversations",job.conversationId)!;
-      if(!c.owner || !c.metadata.sokosumi_organization_id)throw new Error("Verified owner and organization required");
+      if(!c.owner || !c.metadata.sokosumi_organization_id)throw new ControlConflict("Verified owner and organization required");
       const holds=new WorkerHolds(this.state);
       const savedHold=worker.holdId?this.state.get<import("./worker-holds.ts").WorkerHold>("workerHolds",worker.holdId):undefined;
-      if(savedHold && (savedHold.owner!==c.owner || savedHold.organization!==(c.metadata.sokosumi_organization_id??"")))throw new Error("Hold scope changed");
-      if(action==="worker-hold")return {workerId:worker.id,generation:worker.generation??0,paneId:worker.paneId,approvalHold:Boolean(worker.recoveryHold),hold:savedHold,holdGeneration:savedHold?.generation,currentGeneration:worker.generation??0,generationChanged:Boolean(savedHold && savedHold.generation!==(worker.generation??0)),unknownProvenance:!savedHold?.actionDigest};
-      if(this.workerOperations.has(worker.id))throw new Error("Worker operation in progress");
+      if(savedHold && (savedHold.owner!==c.owner || savedHold.organization!==(c.metadata.sokosumi_organization_id??"")))throw new ControlConflict("Hold scope changed");
+      if(action==="worker-hold")return {routineApprovals:this.state.all<{workerId:string;generation:number}>("routineApprovals").filter(r=>r.workerId===worker.id && r.generation===(worker.generation??0)),workerId:worker.id,generation:worker.generation??0,paneId:worker.paneId,approvalHold:Boolean(worker.recoveryHold),hold:savedHold,holdGeneration:savedHold?.generation,currentGeneration:worker.generation??0,generationChanged:Boolean(savedHold && savedHold.generation!==(worker.generation??0)),unknownProvenance:!savedHold?.actionDigest};
+      if(this.workerOperations.has(worker.id))throw new ControlConflict("Worker operation in progress");
       this.workerOperations.add(worker.id);
       try{
-        const input=record(body.evidence);
+        if(action!=="inspect-worker-hold" && (!body.evidence || typeof body.evidence!=="object" || Array.isArray(body.evidence)))
+          throw new ControlConflict("A private exact hold evidence object is required; inspect-worker-hold first");
+        const input=action==="inspect-worker-hold" ? {} : record(body.evidence);
         if(action==="reconcile-worker-hold" && savedHold?.resolvedAt){
           const current=this.state.get<Worker>("workers",worker.id)!;
           const currentC=this.state.get<Conversation>("conversations",c.id)!;
-          if(this.job(job.id).status!=="in_progress")throw new Error("Owner chat ended before reconciliation");
+          if(this.job(job.id).status!=="in_progress")throw new ControlConflict("Owner chat ended before reconciliation");
           return holds.resolve(current,currentC,input,job.id);
         }
-        holds.bound(worker,c,input);
+        const required = action==="record-worker-hold" ? ["holdId","actionText","dialogFingerprint","actionDigest","evidenceReference"] : action==="reconcile-worker-hold" ? ["holdId","decision","decisionReference","actionDigest"] : [];
+        if(required.some(key=>typeof input[key]!=="string" || !input[key])) throw new ControlConflict("Missing exact hold evidence fields: " + required.join(", "));
+        let inspection: Record<string, unknown> | undefined;
+        if(action!=="inspect-worker-hold") holds.bound(worker,c,input);
+        else if(!worker.recoveryHold || !worker.paneId) throw new ControlConflict("No active retained worker hold to inspect");
         const live=await this.workerAgent(worker);
-        if(!live || (action==="record-worker-hold" ? live.agent_status!=="blocked" : !["idle","done"].includes(live.agent_status)))throw new Error("Verify the exact blocked dialog or its closed idle/done session first");
-        if(action==="record-worker-hold"){
+        if(!live || (action!=="reconcile-worker-hold" ? live.agent_status!=="blocked" : !["idle","done"].includes(live.agent_status)))throw new ControlConflict("Verify the exact blocked dialog or its closed idle/done session first");
+        const boundSession = savedHold?.sessionId;
+        if((worker.kind==="claude" || boundSession || input.sessionId!==undefined) && (!live.agent_session_id || (boundSession && boundSession!==live.agent_session_id) || (action!=="inspect-worker-hold" && input.sessionId!==live.agent_session_id)))
+          throw new ControlConflict("Exact live Claude sessionId is required and must match recorded evidence; inspect-worker-hold first");
+        if(action!=="reconcile-worker-hold"){
           const pane=await this.herdr.call(["agent","read",worker.paneId!,"--source","recent-unwrapped","--lines","80"]);
           const paneText=typeof pane.text === "string" ? pane.text : JSON.stringify(pane);
-          const parsed=recognizedDialog(paneText);
-          const suppliedAction=textField(input,"actionText");
-          const suppliedFingerprint=textField(input,"dialogFingerprint");
-          if(!parsed || canonical(parsed.action)!==canonical(suppliedAction))throw new Error("Recorded action does not match the inspected worker dialog");
-          if(createHash("sha256").update(paneText).digest("hex")!==suppliedFingerprint)throw new Error("Inspected worker dialog fingerprint changed");
+          const parsed=inspectHoldDialog(paneText);
+          if(!parsed) throw new ControlConflict("Unsupported worker dialog format/layout; hold retained. Inspect the exact recent-unwrapped pane; no approval is implied.");
+          if(action==="inspect-worker-hold") {
+            const current=this.state.get<Worker>("workers",worker.id)!;
+            const currentC=this.state.get<Conversation>("conversations",c.id)!;
+            if(current.generation!==worker.generation || current.paneId!==worker.paneId || current.taskId!==worker.taskId || current.holdId!==worker.holdId || !current.recoveryHold || currentC.owner!==c.owner || currentC.metadata.sokosumi_organization_id!==c.metadata.sokosumi_organization_id || this.job(job.id).status!=="in_progress")
+              throw new ControlConflict("Worker hold identity changed during inspection");
+            inspection = {sessionId:live.agent_session_id,workerId:worker.id,holdId:worker.holdId,generation:worker.generation??0,paneId:worker.paneId,actionText:parsed.action,actionTextDigest:createHash("sha256").update(canonical(parsed.action)).digest("hex"),dialogFingerprint:createHash("sha256").update(paneText).digest("hex"),routineApprovalSupported:Boolean(recognizedDialog(paneText)),unknownProvenance:!savedHold?.actionDigest};
+          } else {
+            const suppliedAction=textField(input,"actionText");
+            const suppliedFingerprint=textField(input,"dialogFingerprint");
+            if(canonical(parsed.action)!==canonical(suppliedAction))throw new ControlConflict("Recorded action does not match the inspected worker dialog");
+            if(createHash("sha256").update(paneText).digest("hex")!==suppliedFingerprint)throw new ControlConflict("Inspected worker dialog fingerprint changed");
+          }
         }
         if(worker.taskId){
           const task=record((await this.api(`/tasks/${encodeURIComponent(worker.taskId)}`,"GET",undefined,this.contextHeaders(c))).data);
-          if(task.assigneeId!==this.config.coworkerId || (task.ownerId??task.userId)!==c.owner || task.organizationId!==c.metadata.sokosumi_organization_id)throw new Error("Task owner/organization/assignment cannot be verified");
+          if(task.assigneeId!==this.config.coworkerId || (task.ownerId??task.userId)!==c.owner || task.organizationId!==c.metadata.sokosumi_organization_id)throw new ControlConflict("Task owner/organization/assignment cannot be verified");
         }
         const finalLive=await this.workerAgent(worker);
-        if(!finalLive || (action==="record-worker-hold" ? finalLive.agent_status!=="blocked" : !["idle","done"].includes(finalLive.agent_status)))throw new Error("Worker dialog changed during verification");
+        if(!finalLive || (action!=="reconcile-worker-hold" ? finalLive.agent_status!=="blocked" : !["idle","done"].includes(finalLive.agent_status)))throw new ControlConflict("Worker dialog changed during verification");
+        if(finalLive.agent_session_id!==live.agent_session_id) throw new ControlConflict("Worker session changed during verification; hold retained");
+        if(action!=="reconcile-worker-hold") {
+          const finalPane=await this.herdr.call(["agent","read",worker.paneId!,"--source","recent-unwrapped","--lines","80"]);
+          if(typeof finalPane.text!=="string" || createHash("sha256").update(finalPane.text).digest("hex")!==(inspection?.dialogFingerprint ?? textField(input,"dialogFingerprint")))
+            throw new ControlConflict("Worker dialog changed during verification; inspect again before recording");
+        }
+        if(action==="reconcile-worker-hold" && (worker.kind==="claude" || boundSession)) {
+          const closed=await this.herdr.call(["agent","read",worker.paneId!,"--source","recent-unwrapped","--lines","80"]);
+          if(typeof closed.text!=="string" || inspectHoldDialog(closed.text) || /do you want to proceed\?/i.test(closed.text))
+            throw new ControlConflict("Approval dialog is still visible or closure cannot be verified; human approval has not been confirmed, hold retained");
+        }
         const current=this.state.get<Worker>("workers",worker.id)!;
         const currentC=this.state.get<Conversation>("conversations",c.id)!;
+        if(current.conversationId!==worker.conversationId || current.name!==worker.name || current.worktree!==worker.worktree || current.kind!==worker.kind || current.taskId!==worker.taskId || current.paneId!==worker.paneId || current.generation!==worker.generation || current.holdId!==worker.holdId || currentC.owner!==c.owner || currentC.metadata.sokosumi_organization_id!==c.metadata.sokosumi_organization_id)
+          throw new ControlConflict("Worker hold identity/scope changed during verification");
+        if(this.job(job.id).status!=="in_progress")throw new ControlConflict("Owner chat ended before reconciliation");
+        if(inspection) {
+          if(!current.recoveryHold) throw new ControlConflict("Worker hold changed during inspection");
+          return inspection;
+        }
         holds.bound(current,currentC,input);
-        if(this.job(job.id).status!=="in_progress")throw new Error("Owner chat ended before reconciliation");
-        return action==="record-worker-hold" ? holds.recordAction(current,currentC,input,job.id) : holds.resolve(current,currentC,input,job.id);
+        return action!=="reconcile-worker-hold" ? holds.recordAction(current,currentC,input,job.id) : holds.resolve(current,currentC,input,job.id);
       }finally{this.workerOperations.delete(worker.id);}
     }
     if (this.workerOperations.has(worker.id))
@@ -1961,6 +2056,21 @@ export class Runtime implements ChatService {
         }
       }
       if (["send","resume"].includes(action))this.guardWorkerRecovery(worker);
+      const resumeKey = action === "resume" ? createHash("sha256").update(JSON.stringify([job.id, job.generation ?? 0, worker.id, textField(body, "text")])).digest("hex") : undefined;
+      if (resumeKey) {
+        const resumed = this.state.get<{deliveryId: string; paneId?:string; taskId?:string; conversationId?:string; kind?:string; sessionId?:string; generation?:number; recoveryEpoch?:number; holdId?:string}>("archivedResumes", resumeKey);
+        if (resumed) {
+          const delivery = this.state.get<Delivery>("deliveries", resumed.deliveryId);
+          const expectedGeneration = delivery?.status === "sent" ? (resumed.generation ?? -2) + 1 : resumed.generation;
+          if (!delivery || delivery.workerId !== worker.id || !["queued", "sent"].includes(delivery.status) ||
+              resumed.conversationId !== worker.conversationId || resumed.taskId !== worker.taskId || resumed.paneId !== worker.paneId ||
+              resumed.kind !== (worker.kind ?? "codex") || resumed.sessionId !== worker.sessionId || resumed.holdId !== worker.holdId ||
+              resumed.recoveryEpoch === undefined || resumed.recoveryEpoch !== worker.recoveryEpoch || expectedGeneration !== (worker.generation ?? 0) ||
+              worker.archivedAt !== undefined || worker.archiveRequestedAt !== undefined || !["idle", "done", "working", "completed"].includes(worker.state))
+            throw new ControlConflict(`Archived resume conflict: receipt ${resumeKey}, delivery ${resumed.deliveryId}, status ${delivery?.status ?? "missing"}. Lifecycle/status no longer matches; no wake or instruction replayed. Reconcile the prior operation before authorizing different work.`);
+          return delivery;
+        }
+      }
       if (mutatingWorker) await this.reconcileArchive(worker);
       if (["send","resume"].includes(action))this.guardWorkerRecovery(worker);
       if (action === "stop") {
@@ -1975,9 +2085,10 @@ export class Runtime implements ChatService {
         return { ok: true };
       }
       if (action === "resume") {
+        if (body.recoveryEvidence !== undefined && job.kind !== "chat") throw new ControlConflict("Session continuity attestation requires the active owner chat");
         this.guardWorkerRecovery(worker);
         if (
-          !worker.result &&
+          !worker.archivedAt && !worker.result &&
           ["missing", "launch_failed", "recovery_blocked"].includes(
             worker.state,
           )
@@ -1994,8 +2105,12 @@ export class Runtime implements ChatService {
         }
         if (worker.archivedAt) {
           await this.prepareFollowup(worker, textField(body, "text"));
-          await this.wakeWorker(worker);
-          return this.queueInstruction(worker, textField(body, "text"));
+          await this.wakeWorker(worker, body.recoveryEvidence);
+          return this.state.transaction(() => {
+            const delivery = this.queueInstruction(worker, textField(body, "text"));
+            this.state.put("archivedResumes", resumeKey!, {deliveryId: delivery.id, paneId: worker.paneId, taskId: worker.taskId, conversationId: worker.conversationId, kind: worker.kind ?? "codex", sessionId: worker.sessionId, generation: worker.generation ?? 0, recoveryEpoch: worker.recoveryEpoch, holdId: worker.holdId});
+            return delivery;
+          });
         }
         const live = await this.workerAgent(worker);
         if (!live && worker.result) {
@@ -2010,7 +2125,7 @@ export class Runtime implements ChatService {
               return { status: "recovery_blocked", workerId: worker.id, reason: "Worker pane still owns a process; retained without duplicate launch." };
           }
           await this.prepareFollowup(worker, textField(body, "text"));
-          await this.wakeWorker(worker);
+          await this.wakeWorker(worker, body.recoveryEvidence);
           return this.queueInstruction(worker, textField(body, "text"));
         }
         if (!live || !["idle", "done"].includes(live.agent_status))

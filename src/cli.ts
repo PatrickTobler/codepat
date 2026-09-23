@@ -10,7 +10,7 @@ if (action === "--help" || action === "help" || !action) {
 worker-continuation-plan <worker>
 reconcile-startup-notice <worker> --file <private-notice-evidence.json>
 continue-worker-readonly <worker> --file <private-continuation.json>
-worker-hold <worker>
+worker-hold|inspect-worker-hold <worker>
 record-worker-hold|reconcile-worker-hold <worker> --file <private-evidence.json>
 worker-approve-routine <worker> --file <private-approval.json>
 incident-report <incident-id> --kind failure|blocked|recovered --file <explanation>
@@ -21,7 +21,7 @@ contacts <name-or-email>
 dm-send <stable-key> (--to <name-or-email> | --recipient <verified-user-id>) [--room <uuid>] [--coordination <authorized-task-purpose>] --file <message>
 dm-status <stable-key> | dm-retry <stable-key>
 start <stable-key> --file <prompt> --project <uuid> [--repo <path>] [--base <branch>] [--kind codex|claude|grok]
-send|resume <worker> --file <instructions> | stop|read <worker>
+send|resume <worker> --file <instructions> [--recovery-evidence <private-session.json> (resume only)] | stop|read <worker>
 worker-result <worker> --file <result> | task-report <status> --file <comment>
 task-project <task> --project <uuid> --owner-config <private-json>
 Coordinator commands require an active CODEPAT_JOB_ID and scoped CODEPAT_CONFIG.
@@ -50,6 +50,7 @@ let route = action;
 switch (action) {
   case "worker-continuation-plan":
   case "worker-hold":
+  case "inspect-worker-hold":
     body={jobId,workerId:args[0]};break;
   case "reconcile-startup-notice":
   case "continue-worker-readonly":
@@ -115,7 +116,8 @@ switch (action) {
     break;
   case "resume":
   case "send":
-    body = { jobId, workerId: args[0], text: content };
+    body = { jobId, workerId: args[0], text: content,
+      ...(action === "resume" && args.includes("--recovery-evidence") ? {recoveryEvidence: JSON.parse(readFileSync(option("--recovery-evidence"), "utf8"))} : {}) };
     break;
   case "stop":
   case "read":

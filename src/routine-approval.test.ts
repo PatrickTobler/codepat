@@ -64,11 +64,11 @@ test("routine approval requires recorded provenance and is idempotent", async ()
     recordHold(f);
     const first = await approveRoutine(f.runtime, f.job, f.worker, evidence());
     assert.equal(first.status, "accepted");
-    assert.deepEqual(f.calls, [["agent", "read", "pane", "--source", "recent-unwrapped", "--lines", "80"], ["agent", "send-keys", "pane", "enter"]]);
+    assert.deepEqual(f.calls, [["agent", "read", "pane", "--source", "recent-unwrapped", "--lines", "80"], ["agent", "read", "pane", "--source", "recent-unwrapped", "--lines", "80"], ["agent", "send-keys", "pane", "enter"]]);
     const second = await approveRoutine(f.runtime, f.job, f.worker, evidence());
     assert.equal(second.receiptId, first.receiptId);
     assert.equal(second.keySent, false);
-    assert.equal(f.calls.length, 2);
+    assert.equal(f.calls.length, 3);
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
 });
 test("uncertain approval is fail-closed and cannot be replayed", async () => {
@@ -125,9 +125,10 @@ test("owned worker event can use standing routine authorization without a new ch
   try {
     recordHold(f);
     const eventJob = { ...f.job, id: "worker-event:worker:1", kind: "worker" as const };
+    f.state.put("jobs", eventJob.id, eventJob);
     const result = await approveRoutine(f.runtime, eventJob, f.worker, evidence(), true);
     assert.equal(result.status, "accepted");
-    assert.deepEqual(f.calls, [["agent", "read", "pane", "--source", "recent-unwrapped", "--lines", "80"], ["agent", "send-keys", "pane", "enter"]]);
+    assert.deepEqual(f.calls, [["agent", "read", "pane", "--source", "recent-unwrapped", "--lines", "80"], ["agent", "read", "pane", "--source", "recent-unwrapped", "--lines", "80"], ["agent", "send-keys", "pane", "enter"]]);
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
 });
 test("chat-only routine approval cannot be used as a worker event and vice versa", async () => {

@@ -56,17 +56,17 @@ test('Runtime.control approves only the exact one-time selected provider option'
   g.runtime.api=async()=>({data:{ownerId:'owner',organizationId:'org',assigneeId:'coworker',status:'RUNNING'}});await g.call('record-worker-hold');
   g.runtime.herdr.call=async(args)=>args[1]==='read'?{text:"Action: npm test\nDo you want to proceed?\n❯ 1. Yes, allow all edits during this session"}:{};
   const gEvidence={...routine,holdId:currentG.holdId,dialogFingerprint:createHash('sha256').update('Action: npm test\nDo you want to proceed?\n❯ 1. Yes, allow all edits during this session').digest('hex')};
-  await assert.rejects(g.runtime.control('worker-approve-routine',{jobId:g.job.id,workerId:g.w.id,evidence:gEvidence}),/format or selected option/);
+  await assert.rejects(g.runtime.control('worker-approve-routine',{jobId:g.job.id,workerId:g.w.id,evidence:gEvidence}),/format or selected option|Recorded dialog changed/);
   g.runtime.herdr.call=async(args)=>args[1]==='read'?{text:'Action: npm test\noutput > yes, proceeding\nAction: rm -rf ~/workspaces\nDo you want to proceed?\n❯ 1. No'}:{};
   const stale={...gEvidence,dialogFingerprint:createHash('sha256').update('Action: npm test\noutput > yes, proceeding\nAction: rm -rf ~/workspaces\nDo you want to proceed?\n❯ 1. No').digest('hex')};
-  await assert.rejects(g.runtime.control('worker-approve-routine',{jobId:g.job.id,workerId:g.w.id,evidence:stale}),/format or selected option/);
+  await assert.rejects(g.runtime.control('worker-approve-routine',{jobId:g.job.id,workerId:g.w.id,evidence:stale}),/format or selected option|Recorded dialog changed/);
 });
 test('Runtime.control binds Claude box action and rejects stale recognized prefixes',async t=>{
   const f=await fixture(t);const current=f.state.get<Worker>("workers",f.w.id)!;current.taskId='task';f.state.put('workers',current.id,current);const hold=f.state.get<WorkerHold>('workerHolds',current.holdId!)!;hold.taskId='task';f.state.put('workerHolds',hold.id,hold);
   f.runtime.api=async()=>({data:{ownerId:'owner',organizationId:'org',assigneeId:'coworker',status:'RUNNING'}});
   const box='│ Bash command │\n│ git push --force origin main\nDo you want to proceed?\n❯ 1. Yes';
   f.runtime.herdr.call=async(args)=>args[1]==='read'?{text:'$ npm test\n'+box}:{};
-  await assert.rejects(f.call('record-worker-hold',{...f.evidence,actionText:'npm test',dialogFingerprint:createHash('sha256').update('$ npm test\n'+box).digest('hex')}),/does not match/);
+  await assert.rejects(f.call('record-worker-hold',{...f.evidence,actionText:'npm test',dialogFingerprint:createHash('sha256').update('$ npm test\n'+box).digest('hex')}),/does not match|Recorded dialog changed/);
   const g=await fixture(t);const currentG=g.state.get<Worker>("workers",g.w.id)!;currentG.taskId='task';g.state.put('workers',currentG.id,currentG);const gh=g.state.get<WorkerHold>('workerHolds',currentG.holdId!)!;gh.taskId='task';g.state.put('workerHolds',gh.id,gh);g.runtime.api=async()=>({data:{ownerId:'owner',organizationId:'org',assigneeId:'coworker',status:'RUNNING'}});g.runtime.herdr.call=async(args)=>args[1]==='read'?{text:box}:{};
   const recordEvidence={...g.evidence,actionText:'git push --force origin main',dialogFingerprint:createHash('sha256').update(box).digest('hex')};
   await g.call('record-worker-hold',recordEvidence);
@@ -82,19 +82,19 @@ test('Runtime.control preserves trailing shell pipes and quoted whitespace in th
   f.runtime.herdr.call=async(args)=>args[1]==='read'?{text:recorded}:{};
   const evidence={...f.evidence,actionText:'cat notes.txt',dialogFingerprint:createHash('sha256').update(recorded).digest('hex')};await f.call('record-worker-hold',evidence);
   const changed='│ Bash command │\n│ cat notes.txt |\nDo you want to proceed?\n❯ 1. Yes';f.runtime.herdr.call=async(args)=>args[1]==='read'?{text:changed}:{};
-  await assert.rejects(f.runtime.control('worker-approve-routine',{jobId:f.job.id,workerId:f.w.id,evidence:{...evidence,routine:true,category:'tests',key:'enter',authorizationReference:'owner request',actionText:'cat notes.txt |',dialogFingerprint:createHash('sha256').update(changed).digest('hex')} }),/does not match/);
+  await assert.rejects(f.runtime.control('worker-approve-routine',{jobId:f.job.id,workerId:f.w.id,evidence:{...evidence,routine:true,category:'tests',key:'enter',authorizationReference:'owner request',actionText:'cat notes.txt |',dialogFingerprint:createHash('sha256').update(changed).digest('hex')} }),/does not match|Recorded dialog changed/);
 });
 test('Runtime.control refuses command-significant blank-line changes on both paths',async t=>{
   const f=await fixture(t);const current=f.state.get<Worker>("workers",f.w.id)!;current.taskId='task';f.state.put('workers',current.id,current);const hold=f.state.get<WorkerHold>('workerHolds',current.holdId!)!;hold.taskId='task';f.state.put('workerHolds',hold.id,hold);f.runtime.api=async()=>({data:{ownerId:'owner',organizationId:'org',assigneeId:'coworker',status:'RUNNING'}});
   const dollar='$ echo safe \\\n  rm -rf ~/workspaces\nDo you want to proceed?\n❯ 1. Yes';f.runtime.herdr.call=async(args)=>args[1]==='read'?{text:dollar}:{};
   const dollarEvidence={...f.evidence,actionText:'echo safe \\\n  rm -rf ~/workspaces',dialogFingerprint:createHash('sha256').update(dollar).digest('hex')};await f.call('record-worker-hold',dollarEvidence);
   const changedDollar='$ echo safe \\\n\n  rm -rf ~/workspaces\nDo you want to proceed?\n❯ 1. Yes';f.runtime.herdr.call=async(args)=>args[1]==='read'?{text:changedDollar}:{};
-  await assert.rejects(f.runtime.control('worker-approve-routine',{jobId:f.job.id,workerId:f.w.id,evidence:{...dollarEvidence,routine:true,category:'tests',key:'enter',authorizationReference:'owner request',actionText:'echo safe \\\n\n  rm -rf ~/workspaces',dialogFingerprint:createHash('sha256').update(changedDollar).digest('hex')} }),/does not match/);
+  await assert.rejects(f.runtime.control('worker-approve-routine',{jobId:f.job.id,workerId:f.w.id,evidence:{...dollarEvidence,routine:true,category:'tests',key:'enter',authorizationReference:'owner request',actionText:'echo safe \\\n\n  rm -rf ~/workspaces',dialogFingerprint:createHash('sha256').update(changedDollar).digest('hex')} }),/does not match|Recorded dialog changed/);
   const g=await fixture(t);const currentG=g.state.get<Worker>("workers",g.w.id)!;currentG.taskId='task';g.state.put('workers',currentG.id,currentG);const gh=g.state.get<WorkerHold>('workerHolds',currentG.holdId!)!;gh.taskId='task';g.state.put('workerHolds',gh.id,gh);g.runtime.api=async()=>({data:{ownerId:'owner',organizationId:'org',assigneeId:'coworker',status:'RUNNING'}});
   const box='│ Bash command │\n│ echo safe \\\n│   rm -rf ~/workspaces\nDo you want to proceed?\n❯ 1. Yes';g.runtime.herdr.call=async(args)=>args[1]==='read'?{text:box}:{};
   const boxEvidence={...g.evidence,actionText:'echo safe \\\n  rm -rf ~/workspaces',dialogFingerprint:createHash('sha256').update(box).digest('hex')};await g.call('record-worker-hold',boxEvidence);
   const changedBox='│ Bash command │\n│ echo safe \\\n│\n│   rm -rf ~/workspaces\nDo you want to proceed?\n❯ 1. Yes';g.runtime.herdr.call=async(args)=>args[1]==='read'?{text:changedBox}:{};
-  await assert.rejects(g.runtime.control('worker-approve-routine',{jobId:g.job.id,workerId:g.w.id,evidence:{...boxEvidence,routine:true,category:'tests',key:'enter',authorizationReference:'owner request',actionText:'echo safe \\\n\n  rm -rf ~/workspaces',dialogFingerprint:createHash('sha256').update(changedBox).digest('hex')} }),/does not match/);
+  await assert.rejects(g.runtime.control('worker-approve-routine',{jobId:g.job.id,workerId:g.w.id,evidence:{...boxEvidence,routine:true,category:'tests',key:'enter',authorizationReference:'owner request',actionText:'echo safe \\\n\n  rm -rf ~/workspaces',dialogFingerprint:createHash('sha256').update(changedBox).digest('hex')} }),/does not match|Recorded dialog changed/);
 });
 test('Runtime.control uses one canonical action digest for identical and changed whitespace',async t=>{
   const prepare=async(dialog:string,actionText:string)=>{
@@ -104,18 +104,18 @@ test('Runtime.control uses one canonical action digest for identical and changed
   const dollar='$ npm test \\\n  && echo done\nDo you want to proceed?\n❯ 1. Yes';const d=await prepare(dollar,'npm test \\\n  && echo done');
   const dResult=await d.f.runtime.control('worker-approve-routine',{jobId:d.f.job.id,workerId:d.f.w.id,evidence:{...d.evidence,routine:true,category:'tests',key:'enter',authorizationReference:'owner request'}}) as {status:string};assert.equal(dResult.status,'accepted');
   const changedDollar='$ printf \'a  b\'\nDo you want to proceed?\n❯ 1. Yes';const dc=await prepare("$ printf 'a b'\nDo you want to proceed?\n❯ 1. Yes","printf 'a b'");dc.f.runtime.herdr.call=async(args)=>args[1]==='read'?{text:changedDollar}:{};
-  await assert.rejects(dc.f.runtime.control('worker-approve-routine',{jobId:dc.f.job.id,workerId:dc.f.w.id,evidence:{...dc.evidence,actionText:"printf 'a  b'",dialogFingerprint:createHash('sha256').update(changedDollar).digest('hex'),routine:true,category:'tests',key:'enter',authorizationReference:'owner request'}}),/does not match/);
+  await assert.rejects(dc.f.runtime.control('worker-approve-routine',{jobId:dc.f.job.id,workerId:dc.f.w.id,evidence:{...dc.evidence,actionText:"printf 'a  b'",dialogFingerprint:createHash('sha256').update(changedDollar).digest('hex'),routine:true,category:'tests',key:'enter',authorizationReference:'owner request'}}),/does not match|Recorded dialog changed/);
   const box='╭────╮\n│ Bash command │\n│ printf "header │\n│    indented body" │\n╰────╯\nDo you want to proceed?\n❯ 1. Yes';const b=await prepare(box,'printf "header\n   indented body"');
   const bResult=await b.f.runtime.control('worker-approve-routine',{jobId:b.f.job.id,workerId:b.f.w.id,evidence:{...b.evidence,routine:true,category:'tests',key:'enter',authorizationReference:'owner request'}}) as {status:string};assert.equal(bResult.status,'accepted');
   const changedBox='╭────╮\n│ Bash command │\n│ printf "header │\n│ indented body" │\n╰────╯\nDo you want to proceed?\n❯ 1. Yes';const bc=await prepare(box,'printf "header\n   indented body"');bc.f.runtime.herdr.call=async(args)=>args[1]==='read'?{text:changedBox}:{};
-  await assert.rejects(bc.f.runtime.control('worker-approve-routine',{jobId:bc.f.job.id,workerId:bc.f.w.id,evidence:{...bc.evidence,actionText:'printf "header\n indented body"',dialogFingerprint:createHash('sha256').update(changedBox).digest('hex'),routine:true,category:'tests',key:'enter',authorizationReference:'owner request'}}),/does not match/);
+  await assert.rejects(bc.f.runtime.control('worker-approve-routine',{jobId:bc.f.job.id,workerId:bc.f.w.id,evidence:{...bc.evidence,actionText:'printf "header\n indented body"',dialogFingerprint:createHash('sha256').update(changedBox).digest('hex'),routine:true,category:'tests',key:'enter',authorizationReference:'owner request'}}),/does not match|Recorded dialog changed/);
 });
 test('Runtime.control strips exactly one structural border and preserves literal U+2502',async t=>{
   const setup=async()=>{const f=await fixture(t);const current=f.state.get<Worker>("workers",f.w.id)!;current.taskId='task';f.state.put('workers',current.id,current);const hold=f.state.get<WorkerHold>('workerHolds',current.holdId!)!;hold.taskId='task';f.state.put('workerHolds',hold.id,hold);f.runtime.api=async()=>({data:{ownerId:'owner',organizationId:'org',assigneeId:'coworker',status:'RUNNING'}});return f;};
   const recorded='╭────╮\n│ Bash command │\n│ echo a │ │\n╰────╯\nDo you want to proceed?\n❯ 1. Yes';const f=await setup();f.runtime.herdr.call=async(args)=>args[1]==='read'?{text:recorded}:{};const evidence={...f.evidence,actionText:'echo a │',dialogFingerprint:createHash('sha256').update(recorded).digest('hex')};await f.call('record-worker-hold',evidence);
   const accepted=await f.runtime.control('worker-approve-routine',{jobId:f.job.id,workerId:f.w.id,evidence:{...evidence,routine:true,category:'tests',key:'enter',authorizationReference:'owner request'}}) as {status:string};assert.equal(accepted.status,'accepted');
   const g=await setup();g.runtime.herdr.call=async(args)=>args[1]==='read'?{text:recorded}:{};const gev={...g.evidence,actionText:'echo a │',dialogFingerprint:createHash('sha256').update(recorded).digest('hex')};await g.call('record-worker-hold',gev);const changed='╭────╮\n│ Bash command │\n│ echo a │\n╰────╯\nDo you want to proceed?\n❯ 1. Yes';g.runtime.herdr.call=async(args)=>args[1]==='read'?{text:changed}:{};
-  await assert.rejects(g.runtime.control('worker-approve-routine',{jobId:g.job.id,workerId:g.w.id,evidence:{...gev,actionText:'echo a',dialogFingerprint:createHash('sha256').update(changed).digest('hex'),routine:true,category:'tests',key:'enter',authorizationReference:'owner request'}}),/does not match/);
+  await assert.rejects(g.runtime.control('worker-approve-routine',{jobId:g.job.id,workerId:g.w.id,evidence:{...gev,actionText:'echo a',dialogFingerprint:createHash('sha256').update(changed).digest('hex'),routine:true,category:'tests',key:'enter',authorizationReference:'owner request'}}),/does not match|Recorded dialog changed/);
 });
 test('routine approval rejects legacy or unknown action-text provenance across restart',async t=>{
   const f=await fixture(t);const current=f.state.get<Worker>("workers",f.w.id)!;current.taskId='task';f.state.put('workers',current.id,current);const hold=f.state.get<WorkerHold>('workerHolds',current.holdId!)!;hold.taskId='task';f.state.put('workerHolds',hold.id,hold);f.runtime.api=async()=>({data:{ownerId:'owner',organizationId:'org',assigneeId:'coworker',status:'RUNNING'}});
@@ -178,7 +178,9 @@ test('CLI evidence file maps to scoped hold control operations without a shell o
   server.listen(0,'127.0.0.1');await once(server,'listening');t.after(()=>{server.closeAllConnections();server.close();});const addr=server.address();assert.ok(addr && typeof addr==='object');
   const config=join(f.dir,'cli.json'),file=join(f.dir,'evidence.json');writeFileSync(config,JSON.stringify({url:`http://127.0.0.1:${addr.port}`,token:'synthetic'}));writeFileSync(file,JSON.stringify(f.evidence));
   for(const command of ['record-worker-hold','reconcile-worker-hold'])await promisify(execFile)(process.execPath,[resolve('src/cli.ts'),command,f.w.id,'--file',file],{env:{...process.env,CODEPAT_CONFIG:config,CODEPAT_JOB_ID:f.job.id}});
-  assert.deepEqual(requests.map(r=>r.url),['/control/record-worker-hold','/control/reconcile-worker-hold']);assert.deepEqual(requests[0].body.evidence,f.evidence);
+  await promisify(execFile)(process.execPath,[resolve('src/cli.ts'),'inspect-worker-hold',f.w.id],{env:{...process.env,CODEPAT_CONFIG:config,CODEPAT_JOB_ID:f.job.id}});
+  assert.deepEqual(requests.map(r=>r.url),['/control/record-worker-hold','/control/reconcile-worker-hold','/control/inspect-worker-hold']);assert.deepEqual(requests[0].body.evidence,f.evidence);
+  assert.equal(requests[2].body.evidence,undefined);
 });
 test('a dialog reappearing during ownership verification cannot be reconciled',async t=>{
   const f=await fixture(t);const w=f.state.get<Worker>('workers',f.w.id)!;w.taskId='task';f.state.put('workers',w.id,w);
@@ -196,4 +198,31 @@ test('uncertain conversation delivery blocks hold resolution without changing it
   await assert.rejects(f.call('reconcile-worker-hold',{...f.evidence,decision:'approved',decisionReference:'decision'}),/Unresolved conversation/);
   assert.equal(f.state.get<Worker>('workers',f.w.id)!.recoveryHold,true);
   assert.equal(f.state.get<{status:string}>('outbox',id)!.status,'uncertain');
+});
+
+const claudeGutterDialog = 'Bash command\n\nTip: auto mode handles these prompts for you\n\n   │ ls -la /synthetic/worktree && git -C\n   │ /synthetic/worktree log --oneline -3 && git -C\n   │ /synthetic/worktree status --short | head\n\n   Inspect worktree state\n\nThis command requires approval\nDo you want to proceed?\n❯ 1. Yes\n  2. Yes, and always allow\n  3. Yes, for this session\n  4. No';
+test('scoped inspection records exact Claude gutter action without authorizing or clearing the hold',async t=>{
+  const f=await fixture(t);f.runtime.herdr.call=async args=>{assert.equal(args[1],'read');return {text:claudeGutterDialog};};
+  const inspected=await f.call('inspect-worker-hold') as {actionText:string;dialogFingerprint:string;routineApprovalSupported:boolean};
+  assert.equal(inspected.actionText,'ls -la /synthetic/worktree && git -C\n/synthetic/worktree log --oneline -3 && git -C\n/synthetic/worktree status --short | head');
+  assert.equal(inspected.routineApprovalSupported,true);
+  const evidence={...f.evidence,...inspected};
+  await f.call('record-worker-hold',evidence);await f.call('record-worker-hold',evidence);
+  const h=f.state.get<WorkerHold>('workerHolds',f.evidence.holdId)!;
+  assert.equal(h.decision,undefined);assert.equal(f.state.get<Worker>('workers',f.w.id)!.recoveryHold,true);assert.equal(f.prompts(),0);
+  const path=f.runtime.scopedConfig({kind:'worker',id:f.w.id,generation:1});
+  assert.equal(f.runtime.authorizeControl(JSON.parse(readFileSync(path,'utf8')).token,'inspect-worker-hold',{jobId:f.job.id,workerId:f.w.id}),false);
+  const current=f.state.get<Worker>('workers',f.w.id)!;delete current.holdId;f.state.put('workers',current.id,current);
+  await f.call('inspect-worker-hold');await assert.rejects(f.call('record-worker-hold',evidence),/provenance unknown/);
+  assert.equal(f.state.get<Worker>('workers',f.w.id)!.holdId,undefined);
+});
+test('recording rechecks exact dialog after task lookup and fails with a safe conflict',async t=>{
+  const f=await fixture(t);const w=f.state.get<Worker>('workers',f.w.id)!;w.taskId='task';f.state.put('workers',w.id,w);
+  const h=f.state.get<WorkerHold>('workerHolds',f.evidence.holdId)!;h.taskId='task';f.state.put('workerHolds',h.id,h);
+  let dialog=claudeGutterDialog;
+  f.runtime.herdr.call=async()=>({text:dialog});
+  let change=false;f.runtime.api=async()=>{if(change)dialog=dialog.replace('ls -la','rm -rf');return {data:{ownerId:'owner',organizationId:'org',assigneeId:'coworker'}};};
+  const inspected=await f.call('inspect-worker-hold') as object;change=true;
+  await assert.rejects(f.call('record-worker-hold',{...f.evidence,...inspected}),{status:409,message:'Worker dialog changed during verification; inspect again before recording'});
+  assert.equal(f.state.get<WorkerHold>('workerHolds',h.id)!.actionDigest,undefined);
 });
