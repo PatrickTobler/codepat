@@ -1,3 +1,4 @@
+import {ControlConflict} from "./control-error.ts";
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -16,6 +17,7 @@ async function fixture(
   t: TestContext,
   failed = false,
   authorizeControl?: CodePatServerOptions["authorizeControl"],
+  control?: CodePatServerOptions["control"],
 ) {
   const attachmentDirectory = await mkdtemp(join(tmpdir(), "codepat-http-"));
   t.after(() => rm(attachmentDirectory, { recursive: true, force: true }));
@@ -50,7 +52,7 @@ async function fixture(
     controlToken: "private-secret",
     authorizeControl,
     service,
-    control: async (action) => ({ action }),
+    control: control ?? (async (action) => ({ action })),
   });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
@@ -401,4 +403,17 @@ test("unsupported attachment formats return actionable errors without queueing",
     );
   }
   assert.deepEqual(inputs, []);
+});
+
+test("scoped control exposes safe conflicts but hides unexpected internal errors", async t => {
+  const {request}=await fixture(t,false,token=>token==="scoped",async action=>{
+    if(action==="record-worker-hold")throw new ControlConflict("Unsupported worker dialog format; hold retained");
+    throw new Error("private diagnostic secret");
+  });
+  const denied=await request("/control/record-worker-hold",{},"alice","invalid");
+  assert.equal(denied.status,401);
+  const conflict=await request("/control/record-worker-hold",{},"alice","scoped");
+  assert.equal(conflict.status,409);assert.match(await conflict.text(),/hold retained/);
+  const unexpected=await request("/control/read",{},"alice","scoped");
+  assert.equal(unexpected.status,500);assert.doesNotMatch(await unexpected.text(),/private diagnostic/);
 });

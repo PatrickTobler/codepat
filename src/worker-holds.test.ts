@@ -197,3 +197,30 @@ test('uncertain conversation delivery blocks hold resolution without changing it
   assert.equal(f.state.get<Worker>('workers',f.w.id)!.recoveryHold,true);
   assert.equal(f.state.get<{status:string}>('outbox',id)!.status,'uncertain');
 });
+
+const claudeGutterDialog = 'Bash command\n\nTip: auto mode handles these prompts for you\n\n   │ ls -la /synthetic/worktree && git -C\n   │ /synthetic/worktree log --oneline -3 && git -C\n   │ /synthetic/worktree status --short | head\n\n   Inspect worktree state\n\nThis command requires approval\nDo you want to proceed?\n❯ 1. Yes\n  2. Yes, and always allow\n  3. Yes, for this session\n  4. No';
+test('scoped inspection records exact Claude gutter action without authorizing or clearing the hold',async t=>{
+  const f=await fixture(t);f.runtime.herdr.call=async args=>{assert.equal(args[1],'read');return {text:claudeGutterDialog};};
+  const inspected=await f.call('inspect-worker-hold') as {actionText:string;dialogFingerprint:string;routineApprovalSupported:boolean};
+  assert.equal(inspected.actionText,'ls -la /synthetic/worktree && git -C\n/synthetic/worktree log --oneline -3 && git -C\n/synthetic/worktree status --short | head');
+  assert.equal(inspected.routineApprovalSupported,false);
+  const evidence={...f.evidence,...inspected};
+  await f.call('record-worker-hold',evidence);await f.call('record-worker-hold',evidence);
+  const h=f.state.get<WorkerHold>('workerHolds',f.evidence.holdId)!;
+  assert.equal(h.decision,undefined);assert.equal(f.state.get<Worker>('workers',f.w.id)!.recoveryHold,true);assert.equal(f.prompts(),0);
+  const path=f.runtime.scopedConfig({kind:'worker',id:f.w.id,generation:1});
+  assert.equal(f.runtime.authorizeControl(JSON.parse(readFileSync(path,'utf8')).token,'inspect-worker-hold',{jobId:f.job.id,workerId:f.w.id}),false);
+  const current=f.state.get<Worker>('workers',f.w.id)!;delete current.holdId;f.state.put('workers',current.id,current);
+  await f.call('inspect-worker-hold');await assert.rejects(f.call('record-worker-hold',evidence),/provenance unknown/);
+  assert.equal(f.state.get<Worker>('workers',f.w.id)!.holdId,undefined);
+});
+test('recording rechecks exact dialog after task lookup and fails with a safe conflict',async t=>{
+  const f=await fixture(t);const w=f.state.get<Worker>('workers',f.w.id)!;w.taskId='task';f.state.put('workers',w.id,w);
+  const h=f.state.get<WorkerHold>('workerHolds',f.evidence.holdId)!;h.taskId='task';f.state.put('workerHolds',h.id,h);
+  let dialog=claudeGutterDialog;
+  f.runtime.herdr.call=async()=>({text:dialog});
+  let change=false;f.runtime.api=async()=>{if(change)dialog=dialog.replace('ls -la','rm -rf');return {data:{ownerId:'owner',organizationId:'org',assigneeId:'coworker'}};};
+  const inspected=await f.call('inspect-worker-hold') as object;change=true;
+  await assert.rejects(f.call('record-worker-hold',{...f.evidence,...inspected}),{status:409,message:'Worker dialog changed during verification; inspect again before recording'});
+  assert.equal(f.state.get<WorkerHold>('workerHolds',h.id)!.actionDigest,undefined);
+});

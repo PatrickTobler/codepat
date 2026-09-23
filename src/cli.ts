@@ -10,7 +10,7 @@ if (action === "--help" || action === "help" || !action) {
 worker-continuation-plan <worker>
 reconcile-startup-notice <worker> --file <private-notice-evidence.json>
 continue-worker-readonly <worker> --file <private-continuation.json>
-worker-hold <worker>
+worker-hold|inspect-worker-hold <worker>
 record-worker-hold|reconcile-worker-hold <worker> --file <private-evidence.json>
 worker-approve-routine <worker> --file <private-approval.json>
 incident-report <incident-id> --kind failure|blocked|recovered --file <explanation>
@@ -50,6 +50,7 @@ let route = action;
 switch (action) {
   case "worker-continuation-plan":
   case "worker-hold":
+  case "inspect-worker-hold":
     body={jobId,workerId:args[0]};break;
   case "reconcile-startup-notice":
   case "continue-worker-readonly":

@@ -71,6 +71,7 @@ test('send rechecks after prepare; wake retains created pane and hold but does n
   const result=await f.runtime.control('send',{jobId:j.id,workerId:f.w.id,text:'Continue'}) as {status:string};
   assert.equal(result.status,'recovery_blocked');assert.equal(f.state.all('deliveries').length,0);
   const g=fixture(t);g.w.paneId=undefined;g.w.archivedAt=1;g.state.put('workers',g.w.id,g.w);
+  g.herdr.agents=async()=>[];
   const call=g.herdr.call;g.herdr.call=async args=>{const result=await call(args);g.hold();return result;};
   await assert.rejects(g.runtime.wakeWorker(g.w),/hold retained/);
   assert.equal(g.calls.length,1);assert.equal(g.calls[0][0],'tab');
@@ -105,10 +106,55 @@ test('automatic recovery stops at a hold arriving during assignment read without
   assert.equal(f.state.all<Incident>('incidents').filter(i=>i.kind==='recovered').length,0);
 });
 test('hold arriving during agent start is preserved and never produces a recovered notice',async t=>{
-  const f=fixture(t);f.w.archivedAt=1;f.state.put('workers',f.w.id,f.w);
-  f.herdr.call=async args=>{f.calls.push(args);f.hold();return {root_pane:{pane_id:'pane'}};};
+  const f=fixture(t);f.w.archivedAt=1;f.w.paneId=undefined;f.state.put('workers',f.w.id,f.w);
+  f.herdr.agents=async()=>[];
+  f.herdr.call=async args=>{f.calls.push(args);if(args[0]==='agent')f.hold();return {root_pane:{pane_id:'pane'}};};
   await assert.rejects(f.runtime.wakeWorker(f.w),/hold retained/);
-  assert.equal(f.calls.length,1);assert.equal(f.calls[0][0],'agent');
+  assert.equal(f.calls.length,2);assert.equal(f.calls[1][0],'agent');
   assert.equal(f.state.get<Worker>('workers',f.w.id)!.recoveryHold,true);
   assert.equal(f.state.all<Incident>('incidents').filter(i=>i.kind==='recovered').length,0);
+});
+
+test('lost archived startup acknowledgement reuses same idle pane across restart and concurrent retries',async t=>{
+  const f=fixture(t);f.w.archivedAt=1;f.w.paneId=undefined;f.w.state='stopped';f.state.put('workers',f.w.id,f.w);
+  let launched=false,starts=0;
+  f.herdr.agents=async()=>launched?[{pane_id:'new-pane',name:f.w.name,cwd:f.dir,agent_status:'idle'}]:[];
+  f.herdr.call=async args=>{f.calls.push(args);if(args[0]==='agent'){starts++;launched=true;throw new Error('lost startup ack');}return {root_pane:{pane_id:'new-pane'}};};
+  const j=f.runtime.createResponse(f.c.owner,f.c.id,'Resume');f.runtime.nextJob();
+  const body={jobId:j.id,workerId:f.w.id,text:'Continue retained work'};
+  await assert.rejects(f.runtime.control('resume',body),/lost startup ack/);
+  assert.equal(f.state.get<Worker>('workers',f.w.id)!.archivedAt,1);
+  assert.equal(f.state.all('deliveries').length,0);
+  const reopened=new State(join(f.dir,'state.sqlite'));
+  try{
+    const runtime=new Runtime(reopened,f.herdr,f.runtime.config);
+    const outcomes=await Promise.allSettled([runtime.control('resume',body),runtime.control('resume',body)]);
+    assert.equal(outcomes.filter(r=>r.status==='fulfilled').length,1);
+    const queued=reopened.all<Delivery>('deliveries');assert.equal(queued.length,1);
+    assert.deepEqual(await runtime.control('resume',body),queued[0]);
+    assert.equal(reopened.get<Worker>('workers',f.w.id)!.generation,1);
+    assert.equal(reopened.get<Worker>('workers',f.w.id)!.paneId,'new-pane');
+    await runtime.deliver();await runtime.control('resume',body);await runtime.deliver();
+    assert.equal(f.prompts.length,1);assert.equal(starts,1);
+    assert.equal(f.calls.filter(a=>a[0]==='tab').length,1);
+  }finally{reopened.close();}
+});
+
+test('archived session ambiguity, busy UI and changed ownership never launch or prompt',async t=>{
+  for(const mode of ['missing','pane','name','cwd','busy','duplicate','generation','hold','owner','task','uncertain']){
+    const f=fixture(t);f.w.archivedAt=1;f.state.put('workers',f.w.id,f.w);
+    f.herdr.agents=async()=>{
+      const live={pane_id:'pane',name:'example',cwd:f.dir,agent_status:'idle'};
+      if(mode==='missing')return [];
+      if(mode==='pane')live.pane_id='different';if(mode==='name')live.name='different';if(mode==='cwd')live.cwd='different';if(mode==='busy')live.agent_status='blocked';
+      if(mode==='generation')f.state.put('workers',f.w.id,{...f.w,generation:2});
+      if(mode==='hold')f.hold();
+      if(mode==='owner')f.state.put('conversations',f.c.id,{...f.c,owner:'different'});
+      return mode==='duplicate'?[live,{...live,pane_id:'other'}]:[live];
+    };
+    if(mode==='task'){f.w.taskId='task';f.state.put('workers',f.w.id,f.w);f.runtime.assertAssigned=async()=>({ownerId:'other',organizationId:'org'});}
+    if(mode==='uncertain')f.state.put('deliveries','uncertain',{id:'uncertain',workerId:f.w.id,status:'uncertain'});
+    await assert.rejects(f.runtime.wakeWorker(f.w));
+    assert.equal(f.calls.length,0);assert.equal(f.prompts.length,0);assert.equal(f.state.get<Worker>('workers',f.w.id)!.archivedAt,1);
+  }
 });

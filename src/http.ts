@@ -1,3 +1,4 @@
+import { ControlConflict } from "./control-error.ts";
 import { setTimeout as delay } from "node:timers/promises";
 import type { Progress } from "./progress.ts";
 import { createHash, timingSafeEqual } from "node:crypto";
@@ -423,11 +424,11 @@ export function createCodePatServer(options: CodePatServerOptions) {
     } catch (error) {
       if (abort.signal.aborted || res.destroyed) return;
       const status =
-        error instanceof HttpError || error instanceof AttachmentError
+        error instanceof HttpError || error instanceof AttachmentError || error instanceof ControlConflict
           ? error.status
           : 500;
       const message =
-        error instanceof HttpError || error instanceof AttachmentError
+        error instanceof HttpError || error instanceof AttachmentError || error instanceof ControlConflict
           ? error.message
           : "Internal server error";
       if (res.headersSent) {
