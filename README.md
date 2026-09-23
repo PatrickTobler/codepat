@@ -33,7 +33,7 @@ For a real host, follow [setup](docs/setup.md) in order: Linux/systemd and Herdr
 | `src/main.ts`, `src/runner.ts` | Independent monitor loops, Herdr runner watchdog, supervised Codex turns |
 | `src/herdr.ts`, `src/repository.ts` | Herdr CLI adapter and isolated worktree preparation |
 | `src/contacts.ts` | Scoped directory lookup, verified coworker Directs and durable send recovery |
-| `src/projects.ts` | Paginated project access checks and owner task reassignment |
+| `src/projects.ts`, `src/task-projects.ts` | Paginated project access, scoped live assignment inventory and owner task reassignment |
 | `src/register.ts`, `src/install.ts`, `deploy/` | Explicit registration/install actions and sanitized templates |
 | `CODEPAT.md` | Coordinator operating prompt, rendered into its private runtime directory |
 

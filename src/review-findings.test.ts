@@ -103,7 +103,7 @@ test('blocked follow-up discloses accepted task reopening; orphan pane identity 
   const f=fixture(t);f.w.taskId='task';f.state.put('workers',f.w.id,f.w);
   f.runtime.api=async(_path,method)=>{
     if(method==='POST'){f.state.put('workers',f.w.id,{...f.state.get<Worker>('workers',f.w.id)!,recoveryHold:true});return {data:{}};}
-    return {data:{ownerId:'owner',organizationId:'org',assigneeId:'coworker',status:'COMPLETED'}};
+    return {data:{ownerId:'owner',organizationId:'org',assigneeId:'coworker',status:'COMPLETED',projectId:null}};
   };
   const result=await f.runtime.control('send',{jobId:f.job.id,workerId:f.w.id,text:'Authorized next stage'}) as {status:string;priorAcceptedTaskTransition:{status:string}};
   assert.equal(result.status,'recovery_blocked');assert.equal(result.priorAcceptedTaskTransition.status,'RUNNING');assert.equal(f.state.all('deliveries').length,0);

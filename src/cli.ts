@@ -18,6 +18,7 @@ incident-report <incident-id> --kind failure|blocked|recovered --file <explanati
 review-status | review-work <worker> --state pending|waiting|done --file <note>
 recover-chat <response-id> --reconciled --file <reconciliation>
 status | repositories | instances | workers | projects | project <uuid>
+task-projects [--repo <tracked-path-or-alias>] [--project <expected-uuid>]
 contacts <name-or-email>
 dm-send <stable-key> (--to <name-or-email> | --recipient <verified-user-id>) [--room <uuid>] [--coordination <authorized-task-purpose>] --file <message>
 dm-status <stable-key> | dm-retry <stable-key>
@@ -63,6 +64,9 @@ switch (action) {
     body={jobId,workerId:args[0],evidence:JSON.parse(readFileSync(option("--file"),"utf8"))};break;
   case "incident-report":
     body = { jobId, incidentId: args[0], kind: option("--kind"), text: readFileSync(option("--file"), "utf8") };
+    break;
+  case "task-projects":
+    body = { jobId, ...(args.includes("--repo") ? { repository: option("--repo") } : {}), ...(args.includes("--project") ? { projectId: option("--project") } : {}) };
     break;
   case "contacts":
     body = { jobId, query: args[0] };
