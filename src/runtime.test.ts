@@ -585,6 +585,7 @@ test("follow-up restores archived session in same worktree without creating task
       state: "completed",
       result: "verified",
       archivedAt: 1,
+      sessionId: "saved-session",
       paneId: undefined,
     };
     f.state.put("workers", w.id, w);
@@ -602,7 +603,8 @@ test("follow-up restores archived session in same worktree without creating task
     assert.equal(calls[0][0], "tab");
     assert.ok(calls[0].includes(w.worktree));
     assert.ok(calls[1].includes("resume"));
-    assert.ok(calls[1].includes("--last"));
+    assert.ok(calls[1].includes("saved-session"));
+    assert.ok(!calls[1].includes("--last"));
     const saved = f.state.get<Worker>("workers", w.id)!;
     assert.equal(saved.archivedAt, undefined);
     assert.equal(saved.paneId, "w5:p99");
@@ -623,6 +625,7 @@ test("parallel follow-ups cannot launch two archived sessions", async () => {
       ...worker("a", c.id),
       paneId: undefined,
       archivedAt: 1,
+      sessionId: "saved-session",
       state: "completed",
       result: "done",
     });
@@ -712,7 +715,7 @@ test("completed worker whose process disappeared resumes on follow-up", async ()
     const c = f.runtime.createConversation("alice", {});
     const job = f.runtime.createResponse("alice", c.id, "continue");
     f.runtime.nextJob();
-    const w = { ...worker("a", c.id), state: "completed", result: "done" };
+    const w = { ...worker("a", c.id), state: "completed", result: "done", sessionId: "saved-session" };
     f.state.put("workers", w.id, w);
     f.state.put("meta", "workspace", "w5");
     f.setAgents([]);
@@ -942,10 +945,10 @@ test("verified missing completed session resumes same worker in new pane without
   const f=fixture();
   try {
     const c=f.runtime.createConversation("owner",{}); const j=f.runtime.createResponse("owner",c.id,"Resume"); f.runtime.nextJob();
-    const w={...worker("restore",c.id),state:"completed",result:"Stage done"}; f.state.put("workers",w.id,w); f.state.put("meta","workspace","workspace");f.setAgents([]);
+    const w={...worker("restore",c.id),state:"completed",result:"Stage done",sessionId:"saved-session"}; f.state.put("workers",w.id,w); f.state.put("meta","workspace","workspace");f.setAgents([]);
     const calls:string[][]=[];f.herdr.call=async args=>{calls.push(args);return args[0]==="pane"?{panes:[]}:{root_pane:{pane_id:"new-pane"}};};
     await f.runtime.control("resume",{jobId:j.id,workerId:w.id,text:"Authorized remaining stage"});
-    assert.equal(f.state.all("workers").length,1);assert.equal(f.state.get<Worker>("workers",w.id)!.worktree,w.worktree);assert.ok(calls.some(a=>a.includes("--last")));assert.equal(f.state.all("deliveries").length,1);
+    assert.equal(f.state.all("workers").length,1);assert.equal(f.state.get<Worker>("workers",w.id)!.worktree,w.worktree);assert.ok(calls.some(a=>a.includes("saved-session")));assert.equal(f.state.all("deliveries").length,1);
   } finally {f.close();}
 });
 

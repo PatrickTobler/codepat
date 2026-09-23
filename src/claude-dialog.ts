@@ -1,7 +1,8 @@
-import { canonicalActionText } from './action-text.ts';
+import { canonicalActionText, unambiguousActionText } from './action-text.ts';
 
 /** Bounded Claude gutter layout. Selection is inspected separately from authorization. */
 export function claudeGutterDialog(text: string): {action: string; selected?: string} | undefined {
+  if (!unambiguousActionText(text)) return undefined;
   const lines = text.replace(/\r\n/g, '\n').split('\n');
   const headers = lines.flatMap((line, i) => /^\s*Bash command\s*$/.test(line) ? [i] : []);
   const prompts = lines.flatMap((line, i) => /^\s*Do you want to proceed\?\s*$/.test(line) ? [i] : []);

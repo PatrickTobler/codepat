@@ -54,6 +54,9 @@ export interface Worker {
   paneId?: string;
   idleSince?: number;
   archivedAt?: number;
+  sessionId?: string;
+  sessionEvidenceReference?: string;
+  recoveryEpoch?: number;
   archiveRequestedAt?: number;
   state: string;
   result?: string;

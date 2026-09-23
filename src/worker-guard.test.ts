@@ -4,6 +4,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import test,{type TestContext} from 'node:test';
 import {Runtime} from './runtime.ts';
+import type {HerdrPort} from './herdr.ts';
 import {State,type Worker,type Delivery} from './state.ts';
 import {type Incident} from './incidents.ts';
 function fixture(t:TestContext){
@@ -11,7 +12,7 @@ function fixture(t:TestContext){
   writeFileSync(join(dir,'client.json'),JSON.stringify({url:'http://localhost:1',token:'synthetic'}));
   const state=new State(join(dir,'state.sqlite'));
   const prompts:string[]=[];const calls:string[][]=[];
-  const herdr={call:async(args:string[])=>{calls.push(args);return {root_pane:{pane_id:'new-pane'}};},agents:async()=>[{pane_id:'pane',name:'example',cwd:dir,agent_status:'idle'}],prompt:async(_target:string,text:string)=>{prompts.push(text);}};
+  const herdr:HerdrPort={call:async(args:string[])=>{calls.push(args);return {root_pane:{pane_id:'new-pane'}};},agents:async()=>[{pane_id:'pane',name:'example',cwd:dir,agent_status:'idle'}],prompt:async(_target:string,text:string)=>{prompts.push(text);}};
   const runtime=new Runtime(state,herdr,{dataDir:dir,cliPath:'cli',repo:dir,apiUrl:'http://localhost:1'});
   const c=runtime.createConversation('owner',{sokosumi_organization_id:'org'});
   const w:Worker={id:'worker',name:'example',conversationId:c.id,repo:dir,worktree:dir,branch:'feature',prompt:'work',paneId:'pane',state:'idle',generation:1,createdAt:0,observedAt:0};
@@ -70,7 +71,7 @@ test('send rechecks after prepare; wake retains created pane and hold but does n
   f.runtime.prepareFollowup=async()=>{f.hold();};
   const result=await f.runtime.control('send',{jobId:j.id,workerId:f.w.id,text:'Continue'}) as {status:string};
   assert.equal(result.status,'recovery_blocked');assert.equal(f.state.all('deliveries').length,0);
-  const g=fixture(t);g.w.paneId=undefined;g.w.archivedAt=1;g.state.put('workers',g.w.id,g.w);
+  const g=fixture(t);g.w.paneId=undefined;g.w.archivedAt=1;g.w.sessionId='saved-session';g.state.put('workers',g.w.id,g.w);
   g.herdr.agents=async()=>[];
   const call=g.herdr.call;g.herdr.call=async args=>{const result=await call(args);g.hold();return result;};
   await assert.rejects(g.runtime.wakeWorker(g.w),/hold retained/);
@@ -106,7 +107,7 @@ test('automatic recovery stops at a hold arriving during assignment read without
   assert.equal(f.state.all<Incident>('incidents').filter(i=>i.kind==='recovered').length,0);
 });
 test('hold arriving during agent start is preserved and never produces a recovered notice',async t=>{
-  const f=fixture(t);f.w.archivedAt=1;f.w.paneId=undefined;f.state.put('workers',f.w.id,f.w);
+  const f=fixture(t);f.w.archivedAt=1;f.w.paneId=undefined;f.w.sessionId='saved-session';f.state.put('workers',f.w.id,f.w);
   f.herdr.agents=async()=>[];
   f.herdr.call=async args=>{f.calls.push(args);if(args[0]==='agent')f.hold();return {root_pane:{pane_id:'pane'}};};
   await assert.rejects(f.runtime.wakeWorker(f.w),/hold retained/);
@@ -116,9 +117,9 @@ test('hold arriving during agent start is preserved and never produces a recover
 });
 
 test('lost archived startup acknowledgement reuses same idle pane across restart and concurrent retries',async t=>{
-  const f=fixture(t);f.w.archivedAt=1;f.w.paneId=undefined;f.w.state='stopped';f.state.put('workers',f.w.id,f.w);
+  const f=fixture(t);f.w.archivedAt=1;f.w.paneId=undefined;f.w.sessionId='saved-session';f.w.state='stopped';f.state.put('workers',f.w.id,f.w);
   let launched=false,starts=0;
-  f.herdr.agents=async()=>launched?[{pane_id:'new-pane',name:f.w.name,cwd:f.dir,agent_status:'idle'}]:[];
+  f.herdr.agents=async()=>launched?[{pane_id:'new-pane',name:f.w.name,cwd:f.dir,agent_status:'idle',agent:'codex',agent_session_id:'saved-session'}]:[];
   f.herdr.call=async args=>{f.calls.push(args);if(args[0]==='agent'){starts++;launched=true;throw new Error('lost startup ack');}return {root_pane:{pane_id:'new-pane'}};};
   const j=f.runtime.createResponse(f.c.owner,f.c.id,'Resume');f.runtime.nextJob();
   const body={jobId:j.id,workerId:f.w.id,text:'Continue retained work'};
@@ -183,4 +184,73 @@ test('disabled Grok remains inspectable across restart but cannot hire, launch, 
     assert.equal(reopened.get<Delivery>('deliveries','retained')!.status,'queued');
     assert.deepEqual(reopened.get('workers',f.w.id),before);assert.equal(f.prompts.length,0);
   }finally{reopened.close();}
+});
+
+test('archived resume receipts reject retired/failed and later lifecycle changes without replay, including restart',async t=>{
+  for(const change of ['retired','failed','rearchived','epoch','generation','pane','legacy']){
+    const f=fixture(t);f.w.archivedAt=1;f.w.sessionId='saved-session';f.state.put('workers',f.w.id,f.w);
+    f.herdr.agents=async()=>[{pane_id:'pane',name:f.w.name,cwd:f.dir,agent_status:'idle',agent:'codex',agent_session_id:'saved-session'}];
+    const j=f.runtime.createResponse(f.c.owner,f.c.id,'Resume');f.runtime.nextJob();
+    const body={jobId:j.id,workerId:f.w.id,text:'Same operation'};
+    const delivery=await f.runtime.control('resume',body) as Delivery;
+    assert.deepEqual(await f.runtime.control('resume',body),delivery);
+    if(change==='retired'){
+      const {WorkerHolds}=await import('./worker-holds.ts');const holds=new WorkerHolds(f.state);
+      const w=f.state.get<Worker>('workers',f.w.id)!;holds.observe(w,f.c);w.recoveryHold=true;f.state.put('workers',w.id,w);
+      holds.resolve(w,f.c,{holdId:w.holdId,generation:w.generation,paneId:w.paneId,decision:'denied',actionDigest:'a'.repeat(64),evidenceReference:'synthetic-action',decisionReference:'synthetic-human-denial',retireDeliveryIds:[delivery.id]},j.id);
+      assert.equal(f.state.get<Delivery>('deliveries',delivery.id)!.status,'superseded');
+    }else if(change==='failed') f.state.put('deliveries',delivery.id,{...delivery,status:'failed'});
+    else {
+      await f.runtime.deliver();assert.equal(f.prompts.length,1);
+      assert.equal((await f.runtime.control('resume',body) as Delivery).status,'sent');
+      const w=f.state.get<Worker>('workers',f.w.id)!;
+      if(change==='rearchived')w.archivedAt=2;
+      if(change==='epoch')w.recoveryEpoch!++;
+      if(change==='generation')w.generation!++;
+      if(change==='pane')w.paneId='different';
+      f.state.put('workers',w.id,w);
+      if(change==='legacy'){
+        const entry=f.state.db.prepare("SELECT id FROM records WHERE kind='archivedResumes'").get()!;
+        f.state.put('archivedResumes',String(entry.id),{deliveryId:delivery.id});
+      }
+    }
+    const before=JSON.stringify(f.state.all('workers')),calls=f.calls.length,prompts=f.prompts.length;
+    const reopened=new State(join(f.dir,'state.sqlite'));
+    try{
+      const runtime=new Runtime(reopened,f.herdr,f.runtime.config);
+      await assert.rejects(runtime.control('resume',body),error=>{
+        assert.equal((error as {status:number}).status,409);assert.match(String(error),new RegExp(delivery.id));return true;
+      });
+      assert.equal(JSON.stringify(reopened.all('workers')),before);assert.equal(reopened.all('deliveries').length,1);
+    }finally{reopened.close();}
+    assert.equal(f.calls.length,calls);assert.equal(f.prompts.length,prompts);
+  }
+});
+
+test('archive wake preserves results arriving during task, agent listing and startup awaits',async t=>{
+  for(const seam of ['task','agents','start']){
+    const f=fixture(t);f.w.archivedAt=1;f.w.sessionId='saved-session';f.w.taskId='task';
+    if(seam==='start')f.w.paneId=undefined;
+    f.state.put('workers',f.w.id,f.w);
+    const report=()=>f.state.put('workers',f.w.id,{...f.state.get<Worker>('workers',f.w.id)!,result:'fresh concurrent report',state:'completed',priorResult:'keep prior'});
+    f.runtime.assertAssigned=async()=>{if(seam==='task')report();return {ownerId:f.c.owner,organizationId:'org'};};
+    f.herdr.agents=async()=>{if(seam==='agents')report();return seam==='start'?[]:[{pane_id:'pane',name:f.w.name,cwd:f.dir,agent_status:'idle',agent:'codex',agent_session_id:'saved-session'}];};
+    const call=f.herdr.call;f.herdr.call=async args=>{const r=await call(args);if(args[0]==='agent')report();return r;};
+    await f.runtime.wakeWorker(f.w);
+    const saved=f.state.get<Worker>('workers',f.w.id)!;
+    assert.equal(saved.result,'fresh concurrent report');assert.equal(saved.priorResult,'keep prior');assert.equal(saved.state,'completed');
+    assert.equal(saved.archivedAt,undefined);assert.equal(saved.generation,1);assert.equal(saved.sessionId,'saved-session');
+  }
+});
+
+test('archived reuse requires structured provider kind and saved-session continuity, never names alone',async t=>{
+  for(const mode of ['wrong-kind','missing-kind','missing-session','changed-session','unbound','attested']){
+    const f=fixture(t);f.w.archivedAt=1;if(!['unbound','attested'].includes(mode))f.w.sessionId='saved-session';f.state.put('workers',f.w.id,f.w);
+    f.herdr.agents=async()=>[{pane_id:'pane',name:f.w.name,cwd:f.dir,agent_status:'idle',agent:mode==='wrong-kind'?'claude':mode==='missing-kind'?undefined:'codex',agent_session_id:mode==='missing-session'?undefined:mode==='changed-session'?'different':'saved-session'}];
+    if(mode==='attested'){
+      await f.runtime.wakeWorker(f.w,{paneId:'pane',generation:1,sessionId:'saved-session',evidenceReference:'private/witnessed-original-session'});
+      assert.equal(f.state.get<Worker>('workers',f.w.id)!.sessionId,'saved-session');
+    }else await assert.rejects(f.runtime.wakeWorker(f.w),{status:409});
+    assert.equal(f.calls.length,0);assert.equal(f.prompts.length,0);
+  }
 });

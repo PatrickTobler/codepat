@@ -1,8 +1,13 @@
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {mkdtempSync,writeFileSync,rmSync} from 'node:fs';
+import {mkdtempSync,writeFileSync,rmSync,readFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {join,resolve} from 'node:path';
+import {once} from 'node:events';
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
+import {createCodePatServer} from './http.ts';
+import {canonicalActionText} from './action-text.ts';
 import test, {type TestContext} from 'node:test';
 import {Runtime} from './runtime.ts';
 import {State,type Worker,type Job} from './state.ts';
@@ -27,11 +32,11 @@ Do you want to proceed?
   3. Yes, and switch to auto mode
   4. No`;
 const hash=(text:string)=>createHash('sha256').update(text).digest('hex');
-async function fixture(t:TestContext){
+async function fixture(t:TestContext, display=dialog, action=command){
   const dir=mkdtempSync(join(tmpdir(),'claude-routine-'));
   writeFileSync(join(dir,'client.json'),JSON.stringify({url:'http://localhost:1',token:'synthetic'}));
   const state=new State(join(dir,'state.sqlite'));
-  let text=dialog,status='blocked',session='synthetic-session',keys=0;
+  let text=display,status='blocked',session='synthetic-session',keys=0;
   const calls:string[][]=[];
   const herdr={agents:async()=>[{pane_id:'pane',name:'worker',cwd:dir,agent_status:status,agent_session_id:session}],
     call:async(args:string[]):Promise<Record<string,unknown>>=>{calls.push(args);if(args[1]==='read')return {text};if(args[1]==='send-keys'){keys++;return {};}throw new Error('unexpected effect');},prompt:async()=>{throw new Error('no instruction during approval');}};
@@ -42,7 +47,7 @@ async function fixture(t:TestContext){
   await runtime.monitor();const job=runtime.createResponse(c.owner,c.id,'Run the exact authorized routine setup');runtime.nextJob();
   const call=(action:string,evidence?:unknown)=>runtime.control(action,{jobId:job.id,workerId:w.id,evidence});
   const inspection=await call('inspect-worker-hold') as Record<string,unknown>;
-  const evidence:Record<string,unknown>={...inspection,actionDigest:hash(command),evidenceReference:'private/synthetic-inspection'};
+  const evidence:Record<string,unknown>={...inspection,actionDigest:hash(action),evidenceReference:'private/synthetic-inspection'};
   await call('record-worker-hold',evidence);
   const approval={...evidence,routine:true,category:'dependency-install',key:'enter',authorizationReference:'private/exact-owner-task-authorization'};
   t.after(()=>{state.close();rmSync(dir,{recursive:true,force:true});});
@@ -160,4 +165,39 @@ test('new Claude flow refuses autonomous worker events and routine references wi
   f.closeDialog();
   await assert.rejects(f.call('reconcile-worker-hold',{...f.evidence,decision:'approved',decisionReference:'routine:invented'}),/exact accepted approval receipt/);
   assert.equal(f.keys(),0);assert.equal(f.state.get<Worker>('workers',f.w.id)!.recoveryHold,true);
+});
+
+test('CLI inspect without evidence reaches authenticated HTTP/runtime and returns exact session-bound action',async t=>{
+  const f=await fixture(t);
+  const server=createCodePatServer({organizationId:'org',controlToken:'synthetic-master',service:f.runtime,authorizeControl:f.runtime.authorizeControl.bind(f.runtime),control:f.runtime.control.bind(f.runtime)});
+  server.listen(0,'127.0.0.1');await once(server,'listening');
+  t.after(()=>{server.closeAllConnections();server.close();});
+  const address=server.address();assert.ok(address && typeof address==='object');
+  const ownerConfig=f.runtime.scopedConfig({kind:'job',id:f.job.id,generation:f.job.generation??0});
+  const config=join(f.dir,'cli-http.json');writeFileSync(config,JSON.stringify({...JSON.parse(readFileSync(ownerConfig,'utf8')),url:`http://127.0.0.1:${address.port}`}),{mode:0o600});
+  const before=f.state.get('workers',f.w.id);
+  const {stdout}=await promisify(execFile)(process.execPath,[resolve('src/cli.ts'),'inspect-worker-hold',f.w.id],{env:{...process.env,CODEPAT_CONFIG:config,CODEPAT_JOB_ID:f.job.id}});
+  const inspected=JSON.parse(stdout);assert.equal(inspected.actionText,command);assert.equal(inspected.sessionId,'synthetic-session');assert.equal(inspected.dialogFingerprint,hash(dialog));
+  assert.deepEqual(f.state.get('workers',f.w.id),before);assert.equal(f.keys(),0);
+});
+
+test('inspection and routine approval reject bare CR, ANSI, C0/C1 and bidi deception without stripping',async t=>{
+  for(const control of ['\r','\x1b[2K','\x08','\x00','\x7f','\u009b2K','\u202e','\u2066']){
+    const f=await fixture(t);const misleading=`rm -rf /synthetic/important${control}${command}`;
+    f.setText(dialog.replace(command,misleading));
+    assert.throws(()=>canonicalActionText(misleading),/Ambiguous command control/);
+    await assert.rejects(f.call('inspect-worker-hold'),{status:409});
+    await assert.rejects(f.call('worker-approve-routine',f.approval),{status:409});
+    assert.equal(f.keys(),0);assert.equal(f.state.get<Worker>('workers',f.w.id)!.recoveryHold,true);
+  }
+});
+
+test('multiline and literal tabs remain bound while CRLF is accepted as newline in the routine path',async t=>{
+  const action='printf "a\tb"\ntrue';
+  const multiline=dialog.replace(`   │ ${command}`,action.split('\n').map(line=>'   │ '+line).join('\n')).replace(/\n/g,'\r\n');
+  const f=await fixture(t,multiline,action);
+  assert.equal(f.evidence.actionText,action);
+  assert.equal(canonicalActionText('printf "a\tb"\r\ntrue'),action);
+  assert.notEqual(canonicalActionText(action),canonicalActionText(action.replace('\t',' ')));
+  await f.call('worker-approve-routine',f.approval);assert.equal(f.keys(),1);
 });

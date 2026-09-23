@@ -1,3 +1,4 @@
+import { renderOperatingPrompt } from "./operating-prompt.ts";
 import { configuredWorkerKinds, availableWorkerKinds } from "./worker-kinds.ts";
 import { turnTimeouts, reconcileDeadTurn } from "./recovery.ts";
 import { execFile } from "node:child_process";
@@ -80,10 +81,7 @@ const orchestratorDir = join(dataDir, "orchestrator");
 mkdirSync(orchestratorDir, { recursive: true, mode: 0o700 });
 writeFileSync(
   join(orchestratorDir, "AGENTS.md"),
-  readFileSync(join(source, "../CODEPAT.md"), "utf8").replaceAll(
-    "{{CLI}}",
-    join(source, "cli.ts"),
-  ),
+  renderOperatingPrompt(join(source, "cli.ts")),
   { mode: 0o600 },
 );
 let creatingRunner = false;

@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { State, record, textField, type Conversation, type Job, type Worker } from "./state.ts";
 import { WorkerHolds } from "./worker-holds.ts";
 import type { Agent, HerdrPort } from "./herdr.ts";
-import { ACTION_TEXT_VERSION, canonicalActionText } from "./action-text.ts";
+import { ACTION_TEXT_VERSION, canonicalActionText, unambiguousActionText } from "./action-text.ts";
 
 export interface RoutineApprovalRuntime {
   state: State;
@@ -23,6 +23,7 @@ function selectedOption(line: string): string | undefined {
   return canonical(line.replace(/^(?:❯|>|›)\s*/u, "").replace(/\s*\(SELECTED\)\s*$/i, "").replace(/^\d+[.)]\s*/, "").replace(/[.!:]+$/, "")).toLowerCase();
 }
 export function recognizedDialog(text: string): { action: string; selected: string } | undefined {
+  if (!unambiguousActionText(text)) return undefined;
   const gutter = claudeGutterDialog(text);
   if (gutter) return gutter.selected === "yes" ? {action: gutter.action, selected: "yes"} : undefined;
   const lines = canonical(text).split("\n");
