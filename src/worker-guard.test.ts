@@ -158,3 +158,29 @@ test('archived session ambiguity, busy UI and changed ownership never launch or 
     assert.equal(f.calls.length,0);assert.equal(f.prompts.length,0);assert.equal(f.state.get<Worker>('workers',f.w.id)!.archivedAt,1);
   }
 });
+
+test('disabled Grok remains inspectable across restart but cannot hire, launch, resume or receive prompts',async t=>{
+  const f=fixture(t);f.runtime.config.workerKinds=['codex','claude'];
+  f.w.kind='grok';f.w.state='stopped';f.state.put('workers',f.w.id,f.w);
+  const before=f.state.get<Worker>('workers',f.w.id)!;
+  const job=f.runtime.createResponse(f.c.owner,f.c.id,'Inspect only');
+  const context=f.runtime.nextJob()!.context as {workerKinds:string[]};
+  assert.deepEqual(context.workerKinds,['codex','claude']);
+  let requests=0;f.runtime.api=async()=>{requests++;throw new Error('must not contact task API');};
+  await assert.rejects(f.runtime.startWorker(job,'work','new-grok',{kind:'grok'}),/Unsupported worker kind/);
+  assert.equal(requests,0);assert.equal(f.state.all('workerKeys').length,0);assert.equal(f.state.all('workers').length,1);
+  await assert.rejects(f.runtime.launchWorkerSession(f.w,true),/disabled or unavailable/);
+  for(const action of ['send','resume']){
+    const result=await f.runtime.control(action,{jobId:job.id,workerId:f.w.id,text:'No replay'}) as {status:string;reason:string};
+    assert.equal(result.status,'recovery_blocked');assert.match(result.reason,/disabled or unavailable/);
+  }
+  assert.deepEqual(f.state.get('workers',f.w.id),before);
+  assert.deepEqual(f.runtime.workers(),[before]);assert.equal(f.calls.length,0);
+  f.state.put('deliveries','retained',{id:'retained',workerId:f.w.id,text:'Historical queued instruction',status:'queued',createdAt:0});
+  const reopened=new State(join(f.dir,'state.sqlite'));
+  try{
+    const runtime=new Runtime(reopened,f.herdr,f.runtime.config);await runtime.deliver();
+    assert.equal(reopened.get<Delivery>('deliveries','retained')!.status,'queued');
+    assert.deepEqual(reopened.get('workers',f.w.id),before);assert.equal(f.prompts.length,0);
+  }finally{reopened.close();}
+});

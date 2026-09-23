@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-Use a dedicated Linux account with a working systemd user manager, Git, Node 24, npm, Herdr and Codex. Claude Code is optional for `--kind claude` and is also the orchestrator fallback when Codex is unavailable. Grok Build (`curl -fsSL https://x.ai/cli/install.sh | bash`, then `grok login` or `XAI_API_KEY`) is optional for `--kind grok`. The bridge offers a worker kind only if its CLI answers `--version` at service start, so restart `codepat.service` after installing one. Caddy and a DNS name are needed for the proxy example. GitHub CLI is useful for publishing branches and draft PRs. Each target repository may need its own runtimes and services; workers read that repository's setup instructions.
+Use a dedicated Linux account with a working systemd user manager, Git, Node 24, npm, Herdr and Codex. Claude Code is optional for `--kind claude` and is also the orchestrator fallback when Codex is unavailable. Grok Build (`curl -fsSL https://x.ai/cli/install.sh | bash`, then `grok login` or `XAI_API_KEY`) is optional for `--kind grok`. The bridge offers a worker kind only when allowed by `CODEPAT_WORKER_KINDS` and its CLI answers `--version` at service start. The default is `codex,claude`; an installed Grok binary does not enable Grok. Restart `codepat.service` through the reviewed deployment procedure after changing the allowlist or installing a permitted CLI. Caddy and a DNS name are needed for the proxy example. GitHub CLI is useful for publishing branches and draft PRs. Each target repository may need its own runtimes and services; workers read that repository's setup instructions.
 
 The inspected host has Node 24.21.0, npm 11.19.0, Herdr 0.9.0, Codex CLI 0.154.0 and Claude Code 2.1.272. These are observed versions, not proof that every upstream combination works. Automated tests mock Herdr and Sokosumi. Native Windows/macOS service installation is not implemented: the runner itself depends on Linux `systemd-run`.
 
@@ -35,6 +35,7 @@ Edit the private file, replacing the organization ID and absolute default checko
 | `CODEPAT_CONTACT_ACCOUNTS_FILE` | Optional private per-user directory account registry; see [native contacts](contacts.md) |
 
 | `CODEPAT_CHAT_TIMEOUT_MS` | Chat budget, default 600000 ms; whole seconds, minimum 60000, maximum 3600000 |
+| `CODEPAT_WORKER_KINDS` | Allowed worker providers, comma-separated; defaults to `codex,claude`. Only installed allowed CLIs are advertised. |
 | `CODEPAT_WORKER_IDLE_MS` | Completed worker cleanup delay, default 900000; minimum 1000 |
 | `HERDR_ENV`, `HERDR_SOCKET_PATH` | Set by installer; override socket for intended session |
 | `CODEPAT_CONFIG` | CLI/runner private client JSON path; not the service environment file |
@@ -68,3 +69,11 @@ The installer writes `~/.config/systemd/user/codepat.service` with the checkout/
 On hosts without a shell user bus, set `XDG_RUNTIME_DIR=/run/user/$(id -u)` and `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus`. A logged-in user manager is still required. For foreground diagnosis load the configured values into the process environment using your secret manager and run `node src/main.ts`; do not start a second instance against the same state, socket or port.
 
 After installation, use Sokosumi to request a small task: inspect accessible projects, choose the correct one, start a worker, steer it and verify a structured result on the same task. Test Codex and optional Claude independently. Check proxy authentication, task ownership and restart recovery on a disposable host before wider access. These live provisioning/rollout steps were not run for this repository delivery.
+
+## Restricting worker providers
+
+Set `CODEPAT_WORKER_KINDS=codex,claude` in the existing private service environment to keep Grok disabled even when its binary is installed. The same default applies when the variable is absent. Values are case-sensitive; surrounding whitespace and duplicate names are accepted, but empty/unknown entries fail startup before state initialization. An allowlist with no installed providers advertises no kinds and rejects every new worker request. Grok requires explicit inclusion (`codex,claude,grok`) on installations authorized and provisioned to use it; binary detection does not verify a subscription.
+
+The advertised list and runtime creation gate use the same filtered configuration. Disabled kinds are rejected before task, worktree or pane creation, and retained workers of those kinds cannot be launched, resumed or sent new instructions. Existing records, results, worktrees and provider history remain intact and readable; no uninstall, account change, implicit provider substitution, or process termination occurs. Existing in-flight work is not interrupted. A stop/read/result remains available under its existing scope rules.
+
+For this restriction's activation, the coordinator should include the explicit `CODEPAT_WORKER_KINDS=codex,claude` setting in the reviewed recovery release rollout and verify the new owner-job context advertises only installed Codex/Claude. Keep the stopped/superseded Grok reviewer stopped. Preserve this setting on rollback; an older binary that ignores the variable is not a valid enforcement rollback, so retain the coordinator no-Grok rule and pause new hiring until a compatible release is running. Do not test enforcement by creating a live task or reviving an old worker.

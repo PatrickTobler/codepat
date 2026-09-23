@@ -1,3 +1,4 @@
+import { configuredWorkerKinds, availableWorkerKinds } from "./worker-kinds.ts";
 import { turnTimeouts, reconcileDeadTurn } from "./recovery.ts";
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -9,8 +10,9 @@ import { promisify } from "node:util";
 import { Herdr, paneFrom, shellQuote } from "./herdr.ts";
 import { createCodePatServer } from "./http.ts";
 import { Runtime } from "./runtime.ts";
-import { type Job, record, State, textField, type WorkerKind } from "./state.ts";
+import { type Job, record, State, textField } from "./state.ts";
 
+const allowedWorkerKinds = configuredWorkerKinds(process.env.CODEPAT_WORKER_KINDS);
 const turnTimeout = turnTimeouts();
 const source = dirname(fileURLToPath(import.meta.url));
 const exec = promisify(execFile);
@@ -38,10 +40,9 @@ const repositories = record(
 );
 if (Object.values(repositories).some((value) => typeof value !== "string"))
   throw new Error("Repository paths must be strings");
-// Offer a worker kind only when its CLI runs on this host; install one, then restart.
-const workerKinds: WorkerKind[] = [];
-for (const kind of ["codex", "claude", "grok"] as const)
-  if (await exec(kind, ["--version"], { timeout: 10_000 }).then(() => true, () => false)) workerKinds.push(kind);
+// Advertise only configured providers whose CLI is available on this host.
+const workerKinds = await availableWorkerKinds(allowedWorkerKinds, kind =>
+  exec(kind, ["--version"], { timeout: 10_000 }).then(() => true, () => false));
 const runtime = new Runtime(state, herdr, {
   dataDir,
   cliPath: join(source, "cli.ts"),

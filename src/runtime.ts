@@ -547,6 +547,8 @@ export class Runtime implements ChatService {
     }
   }
   guardWorkerRecovery(worker: Worker): void {
+    if (!(this.config.workerKinds ?? ["codex", "claude"]).includes(worker.kind ?? "codex"))
+      throw new WorkerRecoveryBlocked(worker.id, Boolean(worker.recoveryHold), [], "Worker kind is disabled or unavailable on this installation; records retained, no launch or instruction dispatched.");
     const current=this.state.get<Worker>("workers",worker.id);
     const uncertain=this.state.all<Delivery>("deliveries").filter(d=>d.workerId===worker.id && ["sending","uncertain"].includes(d.status)).map(d=>d.id);
     const held=Boolean(current?.recoveryHold || current?.state==="blocked");
