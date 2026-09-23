@@ -1,0 +1,21 @@
+{
+  "result": {
+    "agents": [
+      {
+        "agent": "claude",
+        "agent_status": "done",
+        "interactive_ready": true,
+        "agent_session": {
+          "agent": "claude",
+          "kind": "id",
+          "source": "herdr:claude",
+          "value": "synthetic-native-session"
+        },
+        "pane_id": "fixture-pane",
+        "name": "fixture-worker",
+        "cwd": "/synthetic/worktree"
+      }
+    ],
+    "type": "agents"
+  }
+}

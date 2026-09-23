@@ -13,7 +13,7 @@ test('Herdr native session references normalize only matching supported provider
   assert.equal(providerSessionId({...native(),agent_session_id:'saved-session'}),'saved-session');
   for(const item of [
     {agent:'codex'}, {...native(),agent:'claude'}, {...native(),agent_session_id:'different'},
-    ...[{},[],5,'saved-session',{source:'plugin',agent:'codex',kind:'id',value:'saved-session'},
+    ...[null,{},[],5,'saved-session',{source:'plugin',agent:'codex',kind:'id',value:'saved-session'},
       {source:'herdr:codex',agent:'codex',kind:'path',value:'/saved'},
       {source:'herdr:codex',agent:'codex',kind:'id',value:'misleading\rsession'}].map(agent_session=>({agent:'codex',agent_session,agent_session_id:'flat-session'})),
   ])assert.equal(providerSessionId(item),undefined);
@@ -33,4 +33,11 @@ test('actual nested Herdr list shape reaches archive recovery; absent, changed a
   }
   state.put('workers',w.id,w);agent=native();await runtime.wakeWorker({...w});
   const after=state.get<Worker>('workers',w.id)!;assert.equal(after.archivedAt,undefined);assert.equal(after.sessionId,w.sessionId);assert.equal(after.paneId,w.paneId);assert.equal(after.generation,48);assert.equal(effects,0);assert.equal(state.all('deliveries').length,0);
+});
+
+test('sanitized owned Herdr 0.9 wire response passes through the actual adapter',async()=>{
+ const {readFileSync}=await import('node:fs');
+ const wire=JSON.parse(readFileSync(new URL('./fixtures/herdr-native-agent-list.json',import.meta.url),'utf8'));
+ const h=new Herdr();h.call=async args=>{assert.deepEqual(args,['agent','list']);return wire.result;};
+ const [agent]=await h.agents();assert.equal(agent.agent,'claude');assert.equal(agent.agent_session_id,'synthetic-native-session');assert.equal(agent.pane_id,'fixture-pane');
 });

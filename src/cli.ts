@@ -7,6 +7,7 @@ import { control } from "./client.ts";
 const [action, ...args] = process.argv.slice(2);
 if (action === "--help" || action === "help" || !action) {
   console.log(`CodePat (Node 24)
+fresh-worker-plan <worker> | continue-worker-fresh <worker> --file <private-handoff.json>
 worker-continuation-plan <worker>
 reconcile-startup-notice <worker> --file <private-notice-evidence.json>
 continue-worker-readonly <worker> --file <private-continuation.json>
@@ -48,11 +49,13 @@ const jobId = process.env.CODEPAT_JOB_ID;
 let body: Record<string, unknown> = { jobId };
 let route = action;
 switch (action) {
+  case "fresh-worker-plan":
   case "worker-continuation-plan":
   case "worker-hold":
   case "inspect-worker-hold":
     body={jobId,workerId:args[0]};break;
   case "reconcile-startup-notice":
+  case "continue-worker-fresh":
   case "continue-worker-readonly":
   case "record-worker-hold":
   case "reconcile-worker-hold":

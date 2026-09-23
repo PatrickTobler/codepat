@@ -1,3 +1,4 @@
+import { FreshContinuation } from "./fresh-continuation.ts";
 import { ControlConflict } from "./control-error.ts";
 import { inspectHoldDialog } from "./hold-dialog.ts";
 import {reconcileStartupNotice} from "./startup-notice.ts";
@@ -147,6 +148,8 @@ export class Runtime implements ChatService {
         "workers",
         "reconcile-startup-notice",
         "worker-continuation-plan",
+        "fresh-worker-plan",
+        "continue-worker-fresh",
         "continue-worker-readonly",
         "worker-hold",
         "inspect-worker-hold",
@@ -549,6 +552,8 @@ export class Runtime implements ChatService {
     }
   }
   guardWorkerRecovery(worker: Worker): void {
+    if(worker.freshContinuationId && this.state.get<{phase:string}>("freshContinuations",worker.freshContinuationId)?.phase!=="queued")
+      throw new WorkerRecoveryBlocked(worker.id, Boolean(worker.recoveryHold), [], "Fresh-session transition pending; inspect its durable receipt, no automatic launch or replay.");
     if (!(this.config.workerKinds ?? ["codex", "claude"]).includes(worker.kind ?? "codex"))
       throw new WorkerRecoveryBlocked(worker.id, Boolean(worker.recoveryHold), [], "Worker kind is disabled or unavailable on this installation; records retained, no launch or instruction dispatched.");
     const current=this.state.get<Worker>("workers",worker.id);
@@ -778,7 +783,7 @@ export class Runtime implements ChatService {
               ? "completed"
               : (live?.agent_status ?? "missing");
         const previous = worker.state;
-        if (!worker.archivedAt && !worker.sessionId && !replaced && live?.agent === (worker.kind ?? "codex") && live.agent_session_id)
+        if (!worker.archivedAt && !worker.sessionId && (!worker.freshContinuationId || this.state.get<{phase:string}>("freshContinuations",worker.freshContinuationId)?.phase==="queued") && !replaced && live?.agent === (worker.kind ?? "codex") && live.agent_session_id)
           worker.sessionId = live.agent_session_id;
         worker.state = state;
         if (state === "blocked" || (previous === "blocked" && state !== "working")) {
@@ -1930,7 +1935,7 @@ export class Runtime implements ChatService {
     if (!worker || !this.ownsWorker(job, worker))
       throw new ControlConflict("Worker not owned by this user");
     if (action === "worker-approve-routine") {
-      if (!((job.kind === "chat" && job.status === "in_progress") || (job.kind === "worker" && job.workerId === worker.id)))
+      if (!((job.kind === "chat" && job.status === "in_progress") || (job.kind === "worker" && job.workerId === worker.id && job.taskId === worker.taskId)))
         throw new ControlConflict("Routine approval requires the exact active owner chat or claimed worker event");
       if (this.workerOperations.has(worker.id)) throw new ControlConflict("Worker operation in progress; inspect the current receipt before retrying");
       this.workerOperations.add(worker.id);
@@ -1944,6 +1949,12 @@ export class Runtime implements ChatService {
       } finally {
         this.workerOperations.delete(worker.id);
       }
+    }
+    if(["fresh-worker-plan","continue-worker-fresh"].includes(action)){
+      if(this.workerOperations.has(worker.id))throw new ControlConflict("Worker operation in progress");
+      this.workerOperations.add(worker.id);
+      try{const fresh=new FreshContinuation(this);return action==="fresh-worker-plan"?await fresh.plan(job,worker.id):await fresh.run(job,worker.id,record(body.evidence));}
+      finally{this.workerOperations.delete(worker.id);}
     }
     if(action==="reconcile-startup-notice"){
       if(this.workerOperations.has(worker.id))throw new Error("Worker operation in progress");
@@ -1960,7 +1971,12 @@ export class Runtime implements ChatService {
       finally{this.workerOperations.delete(worker.id);}
     }
     if (["worker-hold","inspect-worker-hold","record-worker-hold","reconcile-worker-hold"].includes(action)) {
-      if(job.kind!=="chat")throw new ControlConflict("Hold reconciliation requires an active owner chat, not autonomous work");
+      const routineEvent=job.kind==="worker" && job.workerId===worker.id && job.taskId===worker.taskId;
+      if(job.kind!=="chat" && !routineEvent)throw new ControlConflict("Hold reconciliation requires an active owner chat or exact claimed worker/task coordination event");
+      if(routineEvent && action==="reconcile-worker-hold"){
+        const decision=body.evidence && typeof body.evidence==="object"?record(body.evidence):{};
+        if(decision.decision!=="approved" || typeof decision.decisionReference!=="string" || !decision.decisionReference.startsWith("routine:"))throw new ControlConflict("Worker events may reconcile only their exact accepted routine receipt; human decisions require owner chat");
+      }
       if(worker.conversationId!==job.conversationId)throw new ControlConflict("Hold requires the exact owning conversation");
       const c=this.state.get<Conversation>("conversations",job.conversationId)!;
       if(!c.owner || !c.metadata.sokosumi_organization_id)throw new ControlConflict("Verified owner and organization required");

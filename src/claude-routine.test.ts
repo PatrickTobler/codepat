@@ -246,3 +246,22 @@ test('ambiguous controls in scrollback outside the command refuse inspection and
   await assert.rejects(f.call('worker-approve-routine',f.approval),{status:409});
   assert.equal(f.keys(),0);assert.equal(f.state.get<Worker>('workers',f.w.id)!.recoveryHold,true);
 });
+
+test('claimed exact worker/task coordination handles an already-authorized routine dialog without a new chat',async t=>{
+ const f=await fixture(t);
+ f.state.put('jobs',f.job.id,{...f.state.get<Job>('jobs',f.job.id)!,kind:'worker',workerId:f.w.id,taskId:f.w.taskId});
+ const inspected=await f.call('inspect-worker-hold') as Record<string,unknown>;assert.equal(inspected.actionText,command);
+ await f.call('record-worker-hold',f.evidence);
+ const approval=await f.call('worker-approve-routine',f.approval) as {receiptId:string};assert.equal(f.keys(),1);
+ f.closeDialog();
+ await assert.rejects(f.call('reconcile-worker-hold',{...f.evidence,decision:'approved',decisionReference:'private/invented-human-decision'}),/human decisions require owner chat/);
+ await f.call('reconcile-worker-hold',{...f.evidence,decision:'approved',decisionReference:`routine:${approval.receiptId}`});
+ assert.equal(f.state.get<Worker>('workers',f.w.id)!.recoveryHold,false);
+});
+test('worker coordination cannot inspect or approve another task and worker reporting tokens cannot approve',async t=>{
+ const f=await fixture(t);
+ f.state.put('jobs',f.job.id,{...f.state.get<Job>('jobs',f.job.id)!,kind:'worker',workerId:f.w.id,taskId:'other-task'});
+ await assert.rejects(f.call('inspect-worker-hold'),{status:409});await assert.rejects(f.call('worker-approve-routine',f.approval),{status:409});
+ const token=JSON.parse(readFileSync(f.runtime.scopedConfig({kind:'worker',id:f.w.id,generation:1}),'utf8')).token;
+ assert.equal(f.runtime.authorizeControl(token,'worker-approve-routine',{workerId:f.w.id,jobId:f.job.id,evidence:f.approval}),false);assert.equal(f.keys(),0);
+});

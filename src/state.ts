@@ -32,6 +32,7 @@ export interface Conversation {
 }
 export type WorkerKind = "codex" | "claude" | "grok";
 export interface Worker {
+  freshContinuationId?: string;
   kind?: WorkerKind;
   id: string;
   name: string;
@@ -68,12 +69,14 @@ export interface Worker {
   routineApproval?: { receiptId: string; generation: number; paneId: string; actionDigest: string; status: "sending" | "accepted" | "uncertain"; at: number };
 }
 export interface Delivery {
+  quarantineId?: string;
+  priorStatus?: string;
   blockedReason?: string;
   recoveryNotice?: boolean;
   id: string;
   workerId: string;
   text: string;
-  status: "queued" | "sending" | "sent" | "uncertain" | "superseded";
+  status: "queued" | "sending" | "sent" | "uncertain" | "superseded" | "quarantined";
   createdAt: number;
 }
 export interface Outbox {

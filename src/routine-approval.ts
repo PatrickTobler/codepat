@@ -156,7 +156,7 @@ export async function approveRoutine(
   if (!parsed) throw new ControlConflict("The worker dialog format or selected option is unsupported; inspect-worker-hold and select only a known one-time Yes through the authorized human/provider flow");
   const gutter = claudeGutterDialog(dialogText);
   if (gutter || worker.kind === "claude" || hold.sessionId) {
-    if (workerEvent) throw new ControlConflict("This Claude routine flow requires the exact active owner chat; worker events cannot authorize this layout");
+    if (workerEvent && (job.workerId !== worker.id || job.taskId !== worker.taskId)) throw new ControlConflict("Routine coordination requires the exact worker/task event, not an unrelated autonomous job");
     if (!live.agent_session_id || !hold.sessionId || evidence.sessionId !== live.agent_session_id || hold.sessionId !== live.agent_session_id ||
         evidence.holdId !== hold.id || evidence.generation !== (worker.generation ?? 0) || evidence.paneId !== worker.paneId || hold.dialogFingerprint !== dialogFingerprint)
       throw new ControlConflict("Exact recorded hold/session/generation/pane/fingerprint binding required; inspect-worker-hold then record-worker-hold");

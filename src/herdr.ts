@@ -17,9 +17,9 @@ export interface Agent {
 // A malformed or contradictory native reference must never fall back to a flat ID.
 export function providerSessionId(item: Record<string, unknown>): string | undefined {
   const valid = (value: unknown): value is string => typeof value === "string" && /^[a-zA-Z0-9][a-zA-Z0-9-]{0,199}$/.test(value);
-  if (item.agent_session !== undefined && item.agent_session !== null) {
+  if (item.agent_session !== undefined) {
     const ref = item.agent_session;
-    if (typeof ref !== "object" || Array.isArray(ref)) return undefined;
+    if (ref === null || typeof ref !== "object" || Array.isArray(ref)) return undefined;
     const session = ref as Record<string, unknown>;
     if (!["codex", "claude", "grok"].includes(String(item.agent)) || session.agent !== item.agent || session.source !== `herdr:${item.agent}` || session.kind !== "id" || !valid(session.value)) return undefined;
     if (item.agent_session_id !== undefined && item.agent_session_id !== session.value) return undefined;
