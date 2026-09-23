@@ -540,7 +540,7 @@ export class Runtime implements ChatService {
         item.attempts = (item.attempts ?? 0) + 1;
         this.state.put("outbox", item.id, item);
         attemptedPost = true;
-        await this.api(item.path, "POST", item.body, headers);
+        await this.api(item.path, "POST", item.body);
         item.status = "sent";
         item.lastError = undefined;
         item.httpStatus = undefined;

@@ -157,3 +157,51 @@ test("a status transition blocked behind an unresolved earlier report stays pend
     f.close();
   }
 });
+
+test("task status writes authenticate as the coworker, not the workspace user", async () => {
+  const f = fixture();
+  try {
+    const conversation = f.runtime.createConversation("owner", {
+      sokosumi_organization_id: "org",
+    });
+    f.runtime.reportTask(
+      "task-1",
+      "finished",
+      "COMPLETED",
+      conversation.id,
+    );
+    const calls: Array<{
+      method: string;
+      headers: Record<string, string>;
+    }> = [];
+    f.runtime.api = async (_path, method = "GET", _body, headers = {}) => {
+      calls.push({ method, headers });
+      return method === "GET"
+        ? {
+            data: {
+              ownerId: "owner",
+              organizationId: "org",
+              assigneeId: "codepat",
+              status: "RUNNING",
+            },
+          }
+        : { data: {} };
+    };
+
+    await f.runtime.flushOutbox();
+
+    assert.deepEqual(calls, [
+      {
+        method: "GET",
+        headers: {
+          "X-Context-User-Id": "owner",
+          "X-Context-Organization-Id": "org",
+        },
+      },
+      { method: "POST", headers: {} },
+    ]);
+    assert.equal(f.state.all<Outbox>("outbox")[0].status, "sent");
+  } finally {
+    f.close();
+  }
+});
