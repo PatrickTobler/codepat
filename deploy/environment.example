@@ -1,6 +1,8 @@
 # systemd EnvironmentFile syntax; absolute paths, no shell expansion.
 # Keep real config outside the checkout, mode 600.
 CODEPAT_ORGANIZATION_ID=replace-with-organization-id
+# Optional single-user allowlist. Set this when only one Sokosumi user should have access.
+# CODEPAT_OWNER_ID=replace-with-sokosumi-user-id
 CODEPAT_REPO=/absolute/path/to/default-checkout
 CODEPAT_PORT=3210
 # CODEPAT_DATA_DIR=/absolute/private/state-directory
@@ -8,17 +10,8 @@ CODEPAT_PORT=3210
 # CODEPAT_COWORKER_ID=replace-with-coworker-id
 # CODEPAT_API_KEY=replace-with-dedicated-coworker-key
 # CODEPAT_REPOSITORIES_JSON={"example":"/absolute/path/to/example"}
-# Only these installed providers may launch or receive new instructions.
-CODEPAT_WORKER_KINDS=codex,claude
-# CODEPAT_WORKER_IDLE_MS=900000
 # HERDR_SOCKET_PATH=/absolute/path/to/herdr.sock
-
-# Optional native-contact directory access registry (private, service-owned, mode 600).
-# CODEPAT_CONTACT_ACCOUNTS_FILE=/absolute/private/contact-accounts.json
 
 # All coordinator turns default to one hour; whole seconds from 60000 to 3600000 ms.
 CODEPAT_CHAT_TIMEOUT_MS=3600000
 CODEPAT_BACKGROUND_TIMEOUT_MS=3600000
-
-# Periodic AI review: default 20 minutes; 0 disables
-CODEPAT_REVIEW_INTERVAL_MS=1200000

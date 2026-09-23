@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { inspectProject, pages, reassignOwnedTask, userApi, type Api } from "./projects.ts";
 import { Runtime } from "./runtime.ts";
-import { State, type Worker } from "./state.ts";
+import { State } from "./state.ts";
 const id = "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa";
 const other = "bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb";
 const config = { userId: "alice", organizationId: "org", organizationSlug: "example" };
@@ -16,7 +16,7 @@ function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "codepat-projects-"));
   writeFileSync(join(dir, "client.json"), JSON.stringify({ url: "http://127.0.0.1:1", token: "synthetic" }));
   const state = new State(join(dir, "state.sqlite"));
-  const runtime = new Runtime(state, { call: async () => ({}), agents: async () => [], prompt: async () => {} }, { dataDir: dir, cliPath: "cli.ts", repo: dir, apiUrl: "http://127.0.0.1:1", coworkerId: "cow" });
+  const runtime = new Runtime(state, { call: async () => ({}), agents: async () => [] }, { dataDir: dir, cliPath: "cli.ts", repo: dir, apiUrl: "http://127.0.0.1:1", coworkerId: "cow" });
   const c = runtime.createConversation("alice", { sokosumi_organization_id: "org" });
   const job = runtime.createResponse("alice", c.id, "code");
   runtime.nextJob();
@@ -47,58 +47,17 @@ test("project inspection rejects invalid/inaccessible/closing projects and upstr
   await assert.rejects(inspectProject(async p => p.startsWith("/projects?") ? page([{ id }]) : { data: { id, closingAt: "now" } }, id, {}), /closing/);
 });
 
-test("coordinator project operations bind requesting identity; worker scopes cannot use them", async () => {
+test("coordinator project operations bind requesting identity; unrelated scopes cannot use them", async () => {
   const f = fixture();
   try {
     writeFileSync(join(f.dir, "client.json"), JSON.stringify({ url: "http://127.0.0.1:1", token: "synthetic" }));
     f.runtime.api = async (_p, _m, _b, h) => { assert.deepEqual(h, { "X-Context-User-Id": "alice", "X-Context-Organization-Id": "org" }); return page([{ id }]); };
     assert.equal((await f.runtime.control("projects", { jobId: f.job.id }) as unknown[]).length, 1);
-    const token = JSON.parse(readFileSync(f.runtime.scopedConfig({ kind: "job", id: f.job.id }), "utf8")).token;
+    const token = JSON.parse(readFileSync(f.runtime.scopedConfig({ id: f.job.id }), "utf8")).token;
     assert.equal(f.runtime.authorizeControl(token, "projects", { jobId: f.job.id }), true);
     assert.equal(f.runtime.authorizeControl(token, "projects", { jobId: "other" }), false);
-    const workerToken = JSON.parse(readFileSync(f.runtime.scopedConfig({ kind: "worker", id: "worker", generation: 1 }), "utf8")).token;
-    assert.equal(f.runtime.authorizeControl(workerToken, "projects", { jobId: f.job.id }), false);
-    await assert.rejects(f.runtime.startWorker(f.job, "code", "key"), /UUID/);
-    assert.equal(f.state.all("workers").length, 0);
-    f.runtime.api = async () => { throw new Error("403"); };
-    await assert.rejects(f.runtime.startWorker(f.job, "code", "key", { projectId: id }), /403/);
-    assert.equal(f.state.all("workers").length, 0);
-  } finally { f.close(); }
-});
-
-test("existing task project is preserved; other owner/org and explicit replacement are rejected", async () => {
-  const f = fixture();
-  try {
-    f.job.taskId = "task";
-    f.runtime.api = async () => ({ data: { id: "task", ownerId: "bob", organizationId: "org", assigneeId: "cow", status: "READY", projectId: id } });
-    await assert.rejects(f.runtime.startWorker(f.job, "code", "key"), /ownership/);
-    f.runtime.api = async () => ({ data: { id: "task", ownerId: "alice", organizationId: "elsewhere", assigneeId: "cow", status: "READY", projectId: id } });
-    await assert.rejects(f.runtime.startWorker(f.job, "code", "key"), /organization/);
-    f.runtime.api = async () => ({ data: { id: "task", ownerId: "alice", organizationId: "org", assigneeId: "cow", status: "READY", projectId: id } });
-    await assert.rejects(f.runtime.startWorker(f.job, "code", "key", { projectId: other }), /different project/);
-    f.runtime.inspectProject = async (_job, selected) => { assert.equal(selected, id); return { id }; };
-    const result = await f.runtime.startWorker(f.job, "code", "key");
-    assert.equal(result.taskId, "task");
-    assert.equal(result.projectId, id);
-    // Missing git repository prevents launch, while reservation retains identity.
-    assert.equal(result.state, "launch_failed");
-    assert.equal((await f.runtime.startWorker(f.job, "code", "key")).id, result.id);
-    await assert.rejects(f.runtime.startWorker(f.job, "code", "key", { projectId: other }), /Stable operation/);
-  } finally { f.close(); }
-});
-
-test("create retains task identity if upstream drops projectId", async () => {
-  const f = fixture();
-  try {
-    const w = { id: "worker", conversationId: f.c.id, prompt: "test", projectId: id } as Worker;
-    f.runtime.api = async (_p, _m, body) => { assert.equal((body as { projectId: string }).projectId, id); return { data: { id: "task", status: "READY" } }; };
-    await assert.rejects(f.runtime.createWorkerTask(w, f.job, "test"), /retain projectId/);
-    assert.equal(w.taskId, "task");
-    assert.equal(w.projectUnconfirmed, true);
-    assert.throws(() => f.runtime.confirmWorkerProject(w, { projectId: null }), /unconfirmed/);
-    f.runtime.confirmWorkerProject(w, { projectId: id });
-    assert.equal(w.projectUnconfirmed, false);
-    assert.equal(f.state.get<Worker>("workers", "worker")?.taskId, "task");
+    const unrelated = JSON.parse(readFileSync(f.runtime.scopedConfig({ id: "resp_unrelated", generation: 1 }), "utf8")).token;
+    assert.equal(f.runtime.authorizeControl(unrelated, "projects", { jobId: f.job.id }), false);
   } finally { f.close(); }
 });
 

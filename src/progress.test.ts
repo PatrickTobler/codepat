@@ -13,7 +13,7 @@ function fixture(t: TestContext) {
   const dir = mkdtempSync(join(tmpdir(), "codepat-progress-"));
   writeFileSync(join(dir, "client.json"), JSON.stringify({ url: "http://localhost:1", token: "test-controller" }));
   const state = new State(join(dir, "state.sqlite"));
-  const runtime = new Runtime(state, { call: async () => ({}), agents: async () => [], prompt: async () => {} },
+  const runtime = new Runtime(state, { call: async () => ({}), agents: async () => [] },
     { dataDir: dir, cliPath: "cli.ts", repo: dir, apiUrl: "http://localhost:1" });
   t.after(() => { state.close(); rmSync(dir, { recursive: true, force: true }); });
   const conversation = runtime.createConversation("requester", { sokosumi_organization_id: "org-test" });
@@ -162,10 +162,9 @@ test("POST retry with stable key reuses the durable job and terminal cursor emit
   assert.equal(f.state.all("jobs").length, 1, "an invalid replay must not reserve new work");
 });
 
-test("a real worker reporting scope cannot inject progress, and recovery retains public journal before failure", async t => {
+test("an unrelated scoped credential cannot inject progress, and recovery retains public journal before failure", async t => {
   const f = await httpFixture(t);
-  f.state.put("workers", "worker-example", { generation: 1 });
-  const config = f.runtime.scopedConfig({ kind: "worker", id: "worker-example", generation: 1 });
+  const config = f.runtime.scopedConfig({ id: "resp_unrelated", generation: 0 });
   const token = JSON.parse(readFileSync(config, "utf8")).token as string;
   assert.equal((await f.post({ jobId: f.job.id, items: [] }, token)).status, 401);
   const path = join(f.dir, "journal.json");

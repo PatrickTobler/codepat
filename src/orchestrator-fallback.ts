@@ -27,10 +27,9 @@ function claudeSessionExists(sessionId: string, cwd: string): boolean {
   const projects = join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), "projects");
   return existsSync(join(projects, cwd.replace(/[^a-zA-Z0-9]/g, "-"), `${sessionId}.jsonl`));
 }
-// Review and incident turns run without a persisted session, matching their
-// fresh Codex context; other turns resume the conversation's Claude session.
-export function claudeArgs(options: { conversationId?: string; freshContext: boolean; cwd: string }): string[] {
-  const session = options.freshContext || !options.conversationId
+// Turns resume the conversation's stable Claude session when one exists.
+export function claudeArgs(options: { conversationId?: string; cwd: string }): string[] {
+  const session = !options.conversationId
     ? ["--no-session-persistence"]
     : (() => {
         const id = claudeSessionId(options.conversationId);
@@ -39,7 +38,7 @@ export function claudeArgs(options: { conversationId?: string; freshContext: boo
   return ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions", ...session];
 }
 export const FALLBACK_NOTE =
-  "Codex is unavailable for this turn, so you are running as Claude Code in its place. Earlier Codex conversation history is not available to you: use the CodePat CLI (workers, read) for current state rather than assuming.\n";
+  "Codex is unavailable for this turn, so you are running as Claude Code in its place. Earlier Codex conversation history is not available to you. Inspect the live repository, task and Herdr state before acting, and do not assume earlier work completed.\n";
 
 function object(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};

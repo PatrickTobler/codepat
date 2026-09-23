@@ -2,10 +2,13 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {renderOperatingPrompt} from './operating-prompt.ts';
 
-test('installed coordinator instructions expose exact scoped inspect/record/approve/reconcile flow',()=>{
-  const cli='/synthetic/release/src/cli.ts',prompt=renderOperatingPrompt(cli);
-  for(const action of ['worker-hold','inspect-worker-hold','record-worker-hold','worker-approve-routine','reconcile-worker-hold'])
-    assert.ok(prompt.includes(`node ${cli} ${action} <worker>`),action);
+test('installed coordinator instructions direct trusted Herdr operation with the small scoped surface', () => {
+  const cli = '/synthetic/release/src/cli.ts', prompt = renderOperatingPrompt(cli);
   assert.ok(!prompt.includes('{{CLI}}'));
-  for(const constraint of ['Inspection is evidence, not authorization','accepted routine receipt acknowledges key transport, not command success','Legacy boolean-only holds','sending/uncertain','active owner chat','--recovery-evidence'])assert.ok(prompt.includes(constraint),constraint);
+  for (const tool of ['instances', 'repositories', 'projects', 'project <uuid>', 'task-status', 'task-report <STATUS>'])
+    assert.ok(prompt.includes(`node ${cli} ${tool}`), tool);
+  for (const direction of ['herdr --skill', 'full host access', 'danger-full-access', 'never in prompts or results'])
+    assert.ok(prompt.includes(direction), direction);
+  for (const removed of ['worker-hold', 'worker-approve-routine', 'recover-chat', 'dm-send', 'incident-report', 'review-work', `${cli} start`, `${cli} send`])
+    assert.ok(!prompt.includes(removed), `${removed} must be gone`);
 });

@@ -142,9 +142,7 @@ await herdr.call(["agent", "rename", pane, "codepat"]);
 const heartbeat = setInterval(() => {
   void control("heartbeat").catch(() => undefined);
 }, 3000);
-console.log(
-  "CodePat is online. Concurrent worker monitoring runs independently in the bridge.",
-);
+console.log("CodePat is online.");
 while (!stopping) {
   try {
     await report("idle");
@@ -169,8 +167,8 @@ while (!stopping) {
     const threadId =
       typeof next.threadId === "string" ? next.threadId : undefined;
     const recovery = typeof record(next.context).recoveryNote === "string"
-      ? `Recovery reconciliation: ${record(next.context).recoveryNote}\nRetain this response, conversation, task and worker identities. Inspect already completed actions, worker keys, existing PRs and delivery states before continuing. Never repeat uncertain external actions or override a human approval.\n` : "";
-    const prompt = recovery + `You are CodePat. Read AGENTS.md in the current directory. This is request ${id}, kind ${job.kind}. Your tools receive CODEPAT_JOB_ID automatically. Finish this turn promptly after dispatching/relaying work; never wait for coding workers. Your final response is delivered to this conversation or task.\nCurrent owned workers and monitor evidence: ${JSON.stringify(next.context)}\nRequest:\n${job.input}`;
+      ? `Recovery reconciliation: ${record(next.context).recoveryNote}\nRetain this response, conversation and task identities. Inspect already completed actions, existing PRs and delivery states before continuing. Never repeat uncertain external actions or override a human approval.\n` : "";
+    const prompt = recovery + `You are CodePat. Read AGENTS.md in the current directory. This is request ${id}, kind ${job.kind}. Your tools receive CODEPAT_JOB_ID automatically. Your final response is delivered to this conversation or task.\nContext: ${JSON.stringify(next.context)}\nRequest:\n${job.input}`;
     const args = [
       "exec",
       "-c",
@@ -282,7 +280,6 @@ while (!stopping) {
       try {
         ({ exitCode, timedOut } = await runUnit("claude", claudeArgs({
           conversationId: typeof job.conversationId === "string" ? job.conversationId : undefined,
-          freshContext: ["review", "incident"].includes(textField(job, "kind")),
           cwd: process.cwd(),
         }), turnEnv, limits, FALLBACK_NOTE + prompt, (event) => {
           const message = claude.ingest(event);
@@ -347,7 +344,7 @@ while (!stopping) {
           await control("reply", {
             jobId: activeJob,
             attempt: activeAttempt,
-            text: "CodePat encountered a runner error. Existing workers remain tracked; check status before retrying.",
+            text: "CodePat encountered a runner error. Durable state remains tracked; check status before retrying.",
             error: "runner_error",
           });
           delivered = true;

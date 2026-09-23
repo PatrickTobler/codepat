@@ -31,7 +31,6 @@ export function providerSessionId(item: Record<string, unknown>): string | undef
 export interface HerdrPort {
   call(args: string[]): Promise<Record<string, unknown>>;
   agents(): Promise<Agent[]>;
-  prompt(target: string, input: string): Promise<void>;
 }
 export class Herdr implements HerdrPort {
   async call(args: string[]): Promise<Record<string, unknown>> {
@@ -69,17 +68,6 @@ export class Herdr implements HerdrPort {
       };
     });
   }
-  async prompt(target: string, input: string): Promise<void> {
-    // No --wait: coding workers continue concurrently after prompt submission.
-    await this.call(["agent", "prompt", target, input]);
-  }
-}
-export async function git(args: string[]): Promise<string> {
-  const { stdout } = await exec("git", args, {
-    timeout: 60_000,
-    maxBuffer: 1024 * 1024,
-  });
-  return stdout.trim();
 }
 export function paneFrom(result: Record<string, unknown>): string {
   return textField(record(result.root_pane ?? result.pane), "pane_id");

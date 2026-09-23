@@ -1,5 +1,4 @@
 import { renderOperatingPrompt } from "./operating-prompt.ts";
-import { configuredWorkerKinds, availableWorkerKinds } from "./worker-kinds.ts";
 import { turnTimeouts, reconcileDeadTurn } from "./recovery.ts";
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -13,7 +12,6 @@ import { createCodePatServer } from "./http.ts";
 import { Runtime } from "./runtime.ts";
 import { type Job, record, State, textField } from "./state.ts";
 
-const allowedWorkerKinds = configuredWorkerKinds(process.env.CODEPAT_WORKER_KINDS);
 const turnTimeout = turnTimeouts();
 const source = dirname(fileURLToPath(import.meta.url));
 const exec = promisify(execFile);
@@ -33,17 +31,11 @@ if (!Number.isInteger(port) || port < 1 || port > 65535)
   throw new Error("Invalid CODEPAT_PORT");
 const state = new State(join(dataDir, "state.sqlite"));
 const herdr = new Herdr();
-const workerIdleMs = Number(process.env.CODEPAT_WORKER_IDLE_MS ?? 900_000);
-if (!Number.isFinite(workerIdleMs) || workerIdleMs < 1000)
-  throw new Error("Invalid CODEPAT_WORKER_IDLE_MS");
 const repositories = record(
   JSON.parse(process.env.CODEPAT_REPOSITORIES_JSON ?? "{}"),
 );
 if (Object.values(repositories).some((value) => typeof value !== "string"))
   throw new Error("Repository paths must be strings");
-// Advertise only configured providers whose CLI is available on this host.
-const workerKinds = await availableWorkerKinds(allowedWorkerKinds, kind =>
-  exec(kind, ["--version"], { timeout: 10_000 }).then(() => true, () => false));
 const runtime = new Runtime(state, herdr, {
   dataDir,
   cliPath: join(source, "cli.ts"),
@@ -53,14 +45,11 @@ const runtime = new Runtime(state, herdr, {
   apiUrl: process.env.CODEPAT_API_URL ?? "https://api.sokosumi.com/v1",
   apiKey: process.env.CODEPAT_API_KEY,
   coworkerId: process.env.CODEPAT_COWORKER_ID,
-  contactAccountsFile: process.env.CODEPAT_CONTACT_ACCOUNTS_FILE,
-  workerIdleMs,
-  reviewIntervalMs: process.env.CODEPAT_REVIEW_INTERVAL_MS === undefined ? undefined : Number(process.env.CODEPAT_REVIEW_INTERVAL_MS),
   repositories: repositories as Record<string, string>,
-  workerKinds,
 });
 const server = createCodePatServer({
   organizationId: process.env.CODEPAT_ORGANIZATION_ID ?? "",
+  ownerId: process.env.CODEPAT_OWNER_ID,
   attachmentDirectory: join(dataDir, "attachments"),
   controlToken,
   authorizeControl: (token, action, body) =>
@@ -195,19 +184,9 @@ function loop(ms: number, action: () => Promise<void>): void {
   );
   void tick();
 }
-loop(3000, async () => {
-  await runtime.monitor();
-  await runtime.recoverWorkers();
-  await runtime.cleanupWorkers();
-});
-loop(2000, () => runtime.deliver());
-loop(2000, () => runtime.contacts.deliver());
 loop(5000, () => runtime.pollTasks());
 loop(5000, () => runtime.flushOutbox());
-loop(10_000, async () => {
-  runtime.reviews.schedule(Date.now());
-  await ensureRunner();
-});
+loop(10_000, () => ensureRunner());
 startedAt = 0;
 await ensureRunner();
 console.log(
