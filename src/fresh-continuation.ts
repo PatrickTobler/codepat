@@ -23,8 +23,8 @@ export class FreshContinuation {
   if(!w || !c?.owner || !c.metadata.sokosumi_organization_id || w.conversationId!==c.id || !r.ownsWorker(job,w) || r.job(job.id).status!=='in_progress' || !(job.kind==='chat' || (job.kind==='worker' && job.workerId===w.id && job.taskId===w.taskId && w.freshContinuationId)))throw new ControlConflict('New-session continuation requires the exact active owner conversation');
   return {w,c};
  }
- async task(id:string,c:Conversation){
-  try{const task=record((await this.runtime.api(`/tasks/${encodeURIComponent(id)}`,'GET',undefined,this.runtime.contextHeaders(c))).data);this.runtime.assertTaskOwner(task,c);if(task.assigneeId!==this.runtime.config.coworkerId)throw new Error('assignment changed');return task;}catch{throw new ControlConflict('Task ownership/assignment/executable state could not be verified; no fresh continuation');}
+ async task(w:Worker,c:Conversation){
+  try{const task=record((await this.runtime.api(`/tasks/${encodeURIComponent(w.taskId!)}`,'GET',undefined,this.runtime.contextHeaders(c))).data);this.runtime.assertTaskOwner(task,c);if(task.assigneeId!==this.runtime.config.coworkerId)throw new Error('assignment changed');this.runtime.validateWorkerProject(w,task);return task;}catch{throw new ControlConflict('Task ownership/assignment/executable state could not be verified; no fresh continuation');}
  }
  eligible(w:Worker){
   if(w.recoveryHold || w.state==='blocked')throw new ControlConflict('Existing approval hold must be reconciled; fresh session cannot bypass it');
@@ -103,7 +103,7 @@ export class FreshContinuation {
    const retained=plan.retainedProcess;
    if(retained && (e.retireIdleSession!==true || !['idle','done'].includes(retained.agent.agent_status)))throw new ControlConflict('Explicit retirement of the exact inspected idle session required; held/busy sessions cannot be replaced');
    const reusablePane=retained?false:await this.empty(w);
-   const task=await this.task(w.taskId!,c);
+   const task=await this.task(w,c);
    if(!['READY','RUNNING','COMPLETED'].includes(String(task.status)))throw new ControlConflict('Task is canceled or requires external input; no fresh continuation');
    const latest=await this.plan(job,id);if(latest.expectedSnapshot!==plan.expectedSnapshot)throw new ControlConflict('Worker or Git changed during continuation preflight');
    g={id:randomUUID(),key:e.key,workerId:id,owner:c.owner,organization:c.metadata.sokosumi_organization_id!,conversationId:c.id,taskId:w.taskId!,requestDigest:hash(e),expected:plan.expectedSnapshot,original:w,git:plan.git,authorizationReference:e.authorizationReference,handoffReference:e.handoffReference,instruction:e.instruction,quarantined:this.snapshot(w,c).deliveries.filter(d=>['queued','uncertain'].includes(d.status)),generation:(w.generation??0)+1,paneId:retained?w.paneId:reusablePane?w.paneId:undefined,retireIdlePane:Boolean(retained),retainedProcess:retained,phase:'reserved',createdAt:Date.now()};
@@ -154,7 +154,7 @@ export class FreshContinuation {
   const candidates=agents.filter(a=>a.pane_id===g!.paneId || a.name===w.name || a.cwd===w.worktree);
   const live=candidates[0];
   if(candidates.length!==1 || live.pane_id!==g.paneId || live.name!==w.name || live.cwd!==w.worktree || live.agent!==(w.kind??'codex') || !live.agent_session_id || !['idle','done'].includes(live.agent_status))return {...this.result(g),reason:'New session started; waiting for exact native session identity and idle prompt. No instruction delivered. Inspect supported provider integration or current startup dialog.'};
-  const task=await this.task(g.taskId,owner);this.current(job,g);
+  const task=await this.task(current,owner);this.current(job,g);
   if(!['READY','RUNNING','COMPLETED'].includes(String(task.status)))throw new ControlConflict('Task no longer permits continuation');
   r.state.transaction(()=>{
    const fresh=this.current(job,g!).w;

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {once} from 'node:events';
 import test,{type TestContext} from 'node:test';
 import {mkdtempSync,writeFileSync,rmSync,readFileSync} from 'node:fs';
 import {join} from 'node:path';
@@ -18,7 +19,7 @@ async function fixture(t:TestContext){
  herdr.call=async a=>{calls.push(a);if(a[0]==='agent'&&a[1]==='list')return {agents:live?[{pane_id:'new-pane',name:'worker',cwd:dir,agent:'codex',agent_status:status,agent_session:session?{source:'herdr:codex',agent:'codex',kind:'id',value:session}:undefined}]:[]};if(a[0]==='pane'&&a[1]==='process-info')return {process_info:{shell_pid:10,foreground_processes:[{pid:11,name:'codex'}]}};if(a[0]==='pane'&&a[1]==='close'){live=false;return {};}if(a[0]==='tab')return {root_pane:{pane_id:'new-pane'}};if(a[1]==='start'){live=true;return {};}if(a[1]==='list')return {panes:[]};throw new Error('unexpected effect');};
  herdr.prompt=async(_p,text)=>{prompts.push(text);};
  const runtime=new Runtime(state,herdr,{dataDir:dir,cliPath:'cli',repo:dir,apiUrl:'http://unused.invalid',coworkerId:'coworker'});
- runtime.api=async()=>({data:{ownerId:'owner',organizationId:'org',assigneeId:'coworker',status:taskStatus}});
+ runtime.api=async()=>({data:{ownerId:'owner',organizationId:'org',assigneeId:'coworker',status:taskStatus,projectId:null}});
  const c=runtime.createConversation('owner',{sokosumi_organization_id:'org'});
  const w:Worker={id:'worker',name:'worker',kind:'codex',conversationId:c.id,taskId:'task',repo:dir,worktree:dir,branch:'retained',prompt:'original scope',state:'completed',result:'Existing result and PR',archivedAt:1,generation:4,createdAt:0,observedAt:0};state.put('workers',w.id,w);state.put('meta','workspace','workspace');
  const job=runtime.createResponse('owner',c.id,'Continue already authorized task in new session');runtime.nextJob();
@@ -113,4 +114,13 @@ test('separate runtime concurrent callers reserve one fresh operation',async t=>
  const f=await fixture(t),e=await f.evidence();const second=new State(join(f.dir,'state.sqlite'));t.after(()=>second.close());const r=new Runtime(second,f.herdr,f.runtime.config);r.api=f.runtime.api;
  const outcomes=await Promise.allSettled([f.call('continue-worker-fresh',e),r.control('continue-worker-fresh',{jobId:f.job.id,workerId:f.w.id,evidence:e})]);
  assert.ok(outcomes.some(x=>x.status==='fulfilled'));assert.equal(f.state.all('freshContinuations').length,1);assert.equal(f.calls.filter(a=>a[1]==='start').length,1);
+});
+
+test('real scoped CLI/HTTP plan and fresh continuation preserve one operation receipt',async t=>{
+ const f=await fixture(t);const {createCodePatServer}=await import('./http.ts');const {execFile}=await import('node:child_process');const {promisify}=await import('node:util');const {fileURLToPath}=await import('node:url');
+ const server=createCodePatServer({organizationId:'org',controlToken:'synthetic-master',service:f.runtime,authorizeControl:f.runtime.authorizeControl.bind(f.runtime),control:f.runtime.control.bind(f.runtime)});server.listen(0,'127.0.0.1');await once(server,'listening');t.after(()=>{server.closeAllConnections();server.close();});
+ const address=server.address();assert.ok(address && typeof address==='object');const scoped=f.runtime.scopedConfig({kind:'job',id:f.job.id,generation:0});const config=join(f.dir,'.git','cli-http.json');writeFileSync(config,JSON.stringify({...JSON.parse(readFileSync(scoped,'utf8')),url:`http://127.0.0.1:${address.port}`}));
+ const run=async(...args:string[])=>JSON.parse((await promisify(execFile)(process.execPath,[fileURLToPath(new URL('./cli.ts',import.meta.url)),...args],{env:{...process.env,CODEPAT_CONFIG:config,CODEPAT_JOB_ID:f.job.id}})).stdout);
+ const plan=await run('fresh-worker-plan',f.w.id),path=join(f.dir,'.git','handoff.json');writeFileSync(path,JSON.stringify({...plan,key:'http-operation',newSession:true,noHistoricalReplay:true,instruction:'Inspect prior PR and complete authorized checks',authorizationReference:'private/owner',handoffReference:'private/reconciled-pr'}));
+ const receipt=await run('continue-worker-fresh',f.w.id,'--file',path),again=await run('continue-worker-fresh',f.w.id,'--file',path);assert.equal(receipt.receiptId,again.receiptId);assert.equal(receipt.phase,'queued');assert.equal(f.calls.filter(a=>a[1]==='start').length,1);assert.equal(f.prompts.length,0);
 });
