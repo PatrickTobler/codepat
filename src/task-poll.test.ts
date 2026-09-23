@@ -7,7 +7,7 @@ import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import type { HerdrPort } from "./herdr.ts";
 import { Runtime } from "./runtime.ts";
-import { type Job, State, type Worker } from "./state.ts";
+import { type Job, State } from "./state.ts";
 
 interface TaskEvent {
   id: string;
@@ -29,7 +29,6 @@ async function fixture(t: TestContext) {
   const events: TaskEvent[] = [];
   const requestedCursors: (string | null)[] = [];
   const requestedTasks: string[] = [];
-  const herdrCalls: string[][] = [];
   let replay = false;
   const server = createServer((req, res) => {
     assert.equal(req.headers.authorization, "Bearer local-test-token");
@@ -75,22 +74,11 @@ async function fixture(t: TestContext) {
   const address = server.address();
   assert.ok(address && typeof address === "object");
   const herdr: HerdrPort = {
-    call: async (args) => {
-      herdrCalls.push(args);
-      return {};
+    call: async () => {
+      assert.fail("Task polling must enqueue work, not operate Herdr");
     },
-    agents: async () =>
-      state
-        .all<Worker>("workers")
-        .filter((w) => w.paneId)
-        .map((w) => ({
-          pane_id: w.paneId!,
-          name: w.name,
-          cwd: w.worktree,
-          agent_status: "working",
-        })),
-    prompt: async () => {
-      assert.fail("Task polling must enqueue work, not directly prompt agents");
+    agents: async () => {
+      assert.fail("Task polling must enqueue work, not inspect agents");
     },
   };
   const config = {
@@ -105,25 +93,6 @@ async function fixture(t: TestContext) {
   function addTask(id: string, status = "READY", assigneeId = "codepat") {
     tasks.set(id, { id, status, assigneeId, userId: "alice" });
   }
-  function trackWorker(taskId: string) {
-    const conversation = runtime.createConversation("alice", { taskId });
-    const worker: Worker = {
-      id: `worker-${taskId}`,
-      name: `worker-${taskId}`,
-      prompt: "work",
-      repo: dir,
-      worktree: dir,
-      branch: `test-${taskId}`,
-      taskId,
-      conversationId: conversation.id,
-      paneId: `w1:${taskId}`,
-      state: "working",
-      observedAt: 0,
-      createdAt: 0,
-    };
-    state.put("workers", worker.id, worker);
-    return worker;
-  }
   return {
     state,
     statePath,
@@ -132,10 +101,8 @@ async function fixture(t: TestContext) {
     config,
     events,
     addTask,
-    trackWorker,
     requestedCursors,
     requestedTasks,
-    herdrCalls,
     replay: () => {
       replay = true;
     },
@@ -174,6 +141,20 @@ test("new READY assignment enqueues once and final-page cursor survives restart"
   }
 });
 
+test("follow-up events reuse the existing task conversation", async (t) => {
+  const f = await fixture(t);
+  f.addTask("task", "RUNNING");
+  f.events.push(
+    { id: "e1", taskId: "task", coworkerId: null },
+    { id: "e2", taskId: "task", coworkerId: null },
+  );
+  await f.runtime.pollTasks();
+  assert.equal(f.runtime.pollError, undefined);
+  const jobs = f.state.all<Job>("jobs");
+  assert.equal(jobs.length, 2);
+  assert.equal(jobs[0].conversationId, jobs[1].conversationId);
+});
+
 test("self-authored progress advances the cursor without an orchestration loop", async (t) => {
   const f = await fixture(t);
   f.addTask("task", "RUNNING");
@@ -184,12 +165,11 @@ test("self-authored progress advances the cursor without an orchestration loop",
   assert.equal(f.state.all("jobs").length, 0);
   assert.equal(f.state.get("meta", "taskCursor"), "self-1");
   assert.deepEqual(f.requestedCursors, [null, "self-1"]);
-  assert.deepEqual(f.herdrCalls, []);
+  assert.deepEqual(f.requestedTasks, []);
 });
 
-test("a removed task stops its worker without poisoning later events", async (t) => {
+test("a removed task advances the cursor without poisoning later events", async (t) => {
   const f = await fixture(t);
-  const worker = f.trackWorker("removed");
   f.addTask("accessible");
   f.events.push(
     { id: "gone-1", taskId: "removed", coworkerId: null },
@@ -197,79 +177,26 @@ test("a removed task stops its worker without poisoning later events", async (t)
   );
   await f.runtime.pollTasks();
   assert.equal(f.runtime.pollError, undefined);
-  assert.equal(f.state.get<Worker>("workers", worker.id)?.state, "stopped");
-  assert.deepEqual(f.herdrCalls, [
-    ["agent", "send-keys", worker.paneId, "ctrl+c"],
-  ]);
   assert.deepEqual(
-    f.state
-      .all<Job>("jobs")
-      .filter((job) => job.kind === "task")
-      .map((job) => job.taskId),
+    f.state.all<Job>("jobs").map((job) => job.taskId),
     ["accessible"],
   );
   assert.equal(f.state.get("meta", "taskCursor"), "new-2");
   assert.equal(f.state.get("taskEvents", "gone-1"), true);
 });
 
-for (const change of ["canceled", "reassigned"] as const) {
-  test(`${change} task interrupts tracked worker once across later events`, async (t) => {
-    const f = await fixture(t);
-    f.addTask(
-      "task",
-      change === "canceled" ? "CANCELED" : "RUNNING",
-      change === "reassigned" ? "other-agent" : "codepat",
-    );
-    const worker = f.trackWorker("task");
-    f.events.push(
-      { id: "change-1", taskId: "task", coworkerId: null },
-      { id: "change-2", taskId: "task", coworkerId: null },
-    );
-    await f.runtime.pollTasks();
-    f.replay();
-    await f.runtime.pollTasks();
-    assert.equal(f.runtime.pollError, undefined);
-    assert.deepEqual(f.herdrCalls, [
-      ["agent", "send-keys", worker.paneId, "ctrl+c"],
-    ]);
-    assert.equal(f.state.get<Worker>("workers", worker.id)?.state, "stopped");
-    assert.equal(
-      f.state.all<Job>("jobs").filter((job) => job.kind === "worker").length,
-      1,
-    );
-    assert.equal(
-      f.state.all<Job>("jobs").filter((job) => job.kind === "task").length,
-      0,
-    );
-    assert.equal(f.state.get("meta", "taskCursor"), "change-2");
-  });
-}
-
-test("reassignment stops an active worker even when its events disappear from the feed", async (t) => {
+test("terminal or reassigned tasks never enqueue coordinator turns", async (t) => {
   const f = await fixture(t);
-  f.addTask("task", "RUNNING");
-  const worker = f.trackWorker("task");
+  f.addTask("done", "COMPLETED");
+  f.addTask("canceled", "CANCELED");
+  f.addTask("foreign", "RUNNING", "other-agent");
+  f.events.push(
+    { id: "t1", taskId: "done", coworkerId: null },
+    { id: "t2", taskId: "canceled", coworkerId: null },
+    { id: "t3", taskId: "foreign", coworkerId: null },
+  );
   await f.runtime.pollTasks();
-  assert.deepEqual(f.herdrCalls, []);
-
-  // Core excludes tasks reassigned to another coworker from /me/events.
-  f.addTask("task", "RUNNING", "other-agent");
-  await f.runtime.pollTasks();
-  await f.runtime.pollTasks();
-
   assert.equal(f.runtime.pollError, undefined);
-  assert.deepEqual(f.events, []);
-  assert.deepEqual(f.requestedTasks, ["task", "task"]);
-  assert.deepEqual(f.herdrCalls, [
-    ["agent", "send-keys", worker.paneId, "ctrl+c"],
-  ]);
-  assert.equal(f.state.get<Worker>("workers", worker.id)?.state, "stopped");
-  assert.equal(
-    f.state.all<Job>("jobs").filter((job) => job.kind === "worker").length,
-    1,
-  );
-  assert.equal(
-    f.state.all<Job>("jobs").filter((job) => job.kind === "task").length,
-    0,
-  );
+  assert.equal(f.state.all("jobs").length, 0);
+  assert.equal(f.state.get("meta", "taskCursor"), "t3");
 });

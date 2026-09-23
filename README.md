@@ -1,10 +1,10 @@
 # CodePat
 
-CodePat connects Sokosumi conversations and tasks to a persistent coding coordinator and concurrent Herdr workers. This standalone repository contains the CLI, HTTP bridge, SQLite state, runner, operating prompt, registration/service scripts, example configuration and tests. It does not need the Sokosumi monorepo, database or build system.
+CodePat is a thin trusted gateway between Sokosumi and a local coding coordinator. Sokosumi conversations and tasks reach a persistent, full-access coordinator turn on this host; the coordinator uses the shell, Git, installed tools and the `herdr` CLI directly, exactly like the local user. This standalone repository contains the HTTP bridge, SQLite state, runner, small scoped CLI, operating prompt, registration/service scripts, example configuration and tests.
 
-The coordinator runs Codex, falling back to Claude Code for a turn when Codex is unavailable (usage limit, auth, rate limit, connection or context limit) before it acted. Workers use Codex, Claude Code or Grok Build, whichever are installed, in isolated Git worktrees. A background monitor keeps observing workers while the coordinator answers other requests. Project selection is explicit and checked against the requesting user's accessible Sokosumi workspace. Existing tasks and workers retain their identities.
+The coordinator runs Codex, falling back to Claude Code for a turn when Codex is unavailable (usage limit, auth, rate limit, connection or context limit) before it acted. Sokosumi owns conversations, tasks, assignment, status and event history; the bridge keeps only the minimal durable state for chat responses, idempotency, coordinator threads, progress, task-event deduplication, scoped turn credentials and task-report delivery.
 
-**Use only with trusted collaborators.** Agents run with the host account's filesystem, network and Git credentials. Codex, the Claude Code fallback coordinator and Grok workers run with full access and no approval prompts. The chat organization header is a filter, not authentication; deploy trusted ingress before exposing chat. See [security and operations](docs/operations.md).
+**Use only with trusted collaborators.** The coordinator runs with the host account's filesystem, network and Git credentials, with no approval prompts. The chat organization header is a filter, not authentication; deploy trusted ingress before exposing chat. See [security and operations](docs/operations.md).
 
 ## Quickstart
 
@@ -19,26 +19,18 @@ npm run typecheck
 node src/cli.ts --help
 ```
 
-This repository contains source and example configuration, not a running service. Running CodePat requires your own service and agent credentials; publishing or cloning this repository does not expose or deploy an endpoint. No npm registry publication is required. `npm link` optionally installs the `codepat` command from this checkout; `node src/cli.ts` works without linking. There is no build step or external runtime dependency. Node's built-in TypeScript stripping and SQLite provide execution/storage. Development dependencies are pinned in `package-lock.json`.
-
-For a real host, follow [setup](docs/setup.md) in order: Linux/systemd and Herdr, agent authentication, GitHub access, Sokosumi registration/workspace access, private configuration, trusted proxy/TLS, then explicit service installation. Installing the service starts it; the test quickstart above does not.
-
 ## Where to look
 
 | File | Responsibility |
 | --- | --- |
-| `src/cli.ts`, `src/client.ts` | Scoped controller CLI; explicit owner-authenticated project reassignment |
 | `src/http.ts`, `src/attachments.ts` | Conversations/Responses HTTP contract, streams, attachment validation |
-| `src/runtime.ts`, `src/state.ts` | Durable jobs, task intake, worker operations, delivery/recovery/lifecycle |
-| `src/main.ts`, `src/runner.ts` | Independent monitor loops, Herdr runner watchdog, supervised Codex turns |
-| `src/herdr.ts`, `src/repository.ts` | Herdr CLI adapter and isolated worktree preparation |
-| `src/contacts.ts` | Scoped directory lookup, verified coworker Directs and durable send recovery |
+| `src/runtime.ts`, `src/state.ts` | Durable jobs, idempotency, task-event intake, scoped controls, task-report delivery |
+| `src/main.ts`, `src/runner.ts` | Bridge loops, Herdr runner watchdog, supervised Codex turns with Claude fallback |
+| `src/cli.ts`, `src/client.ts` | Scoped coordinator CLI; explicit owner-authenticated project reassignment |
+| `src/herdr.ts` | Herdr CLI adapter for the bridge's own workspace and live inventory |
 | `src/projects.ts` | Paginated project access checks and owner task reassignment |
+| `src/recovery.ts`, `src/progress.ts` | Turn deadlines, receipts and safe live-progress projection |
 | `src/register.ts`, `src/install.ts`, `deploy/` | Explicit registration/install actions and sanitized templates |
 | `CODEPAT.md` | Coordinator operating prompt, rendered into its private runtime directory |
 
-[Live progress streaming](docs/streaming.md) covers safe event selection, replay and Sokosumi compatibility.
-
-[Incident communication](docs/incidents.md) explains orchestrator-owned notices and bootstrap fallbacks. [Native contact tools](docs/contacts.md) covers directory access, standing coordination preferences and durable sends. [Chat deadlines and recovery](docs/recovery.md) covers timeout classification, safe retry boundaries and reboot preparation. [Architecture and operations](docs/operations.md) covers monitoring, steering, results, cleanup, recovery, trust and troubleshooting. [Projects](docs/projects.md) records the live API/auth contract and commands. [Verification](docs/verification.md) separates automated evidence from integration prerequisites. [NOTICE](NOTICE) and [LICENSE](LICENSE) preserve upstream attribution and terms.
-
-Periodic AI review is configurable and defaults to twenty minutes for scoped unfinished work. See [scheduling, silence and activation](docs/periodic-review.md).
+[Live progress streaming](docs/streaming.md) covers safe event selection, replay and Sokosumi compatibility. [Architecture and operations](docs/operations.md) covers the request lifecycle, trust, turn recovery and troubleshooting. [Projects](docs/projects.md) records the live API/auth contract and commands. [Verification](docs/verification.md) separates automated evidence from integration prerequisites. [NOTICE](NOTICE) and [LICENSE](LICENSE) preserve upstream attribution and terms.

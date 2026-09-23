@@ -21,23 +21,23 @@ test("each conversation maps to one stable, valid Claude session id", () => {
   assert.match(id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
 });
 
-test("Claude turns create, then resume, the conversation session; reviews stay fresh", () => {
+test("Claude turns create, then resume, the conversation session", () => {
   const home = mkdtempSync(join(tmpdir(), "codepat-claude-"));
   const previous = process.env.CLAUDE_CONFIG_DIR;
   process.env.CLAUDE_CONFIG_DIR = home;
   try {
     const cwd = "/home/u/.local/share/codepat/orchestrator";
     const id = claudeSessionId("conv_a");
-    const first = claudeArgs({ conversationId: "conv_a", freshContext: false, cwd });
+    const first = claudeArgs({ conversationId: "conv_a", cwd });
     assert.deepEqual(first.slice(-2), ["--session-id", id]);
     assert.ok(first.includes("bypassPermissions") && first.includes("stream-json"));
     const project = join(home, "projects", "-home-u--local-share-codepat-orchestrator");
     mkdirSync(project, { recursive: true });
     writeFileSync(join(project, `${id}.jsonl`), "");
-    assert.deepEqual(claudeArgs({ conversationId: "conv_a", freshContext: false, cwd }).slice(-2), ["--resume", id]);
-    const review = claudeArgs({ conversationId: "conv_a", freshContext: true, cwd });
-    assert.ok(review.includes("--no-session-persistence"));
-    assert.ok(!review.includes(id));
+    assert.deepEqual(claudeArgs({ conversationId: "conv_a", cwd }).slice(-2), ["--resume", id]);
+    const detached = claudeArgs({ cwd });
+    assert.ok(detached.includes("--no-session-persistence"));
+    assert.ok(!detached.includes(id));
   } finally {
     if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR;
     else process.env.CLAUDE_CONFIG_DIR = previous;

@@ -6,17 +6,12 @@ import { DatabaseSync } from "node:sqlite";
 export interface Job {
   id: string;
   conversationId: string;
-  kind: "chat" | "task" | "worker" | "review" | "incident";
-  incidentIds?: string[];
-  reviewOwner?: string;
-  reviewOrganization?: string;
-  reviewFingerprint?: string;
+  kind: "chat" | "task";
   input: string;
   status: "queued" | "in_progress" | "completed" | "failed";
   text: string;
   error?: string;
   taskId?: string;
-  workerId?: string;
   createdAt: number;
   submittedAt?: number;
   generation?: number;
@@ -30,71 +25,17 @@ export interface Conversation {
   owner: string;
   metadata: Record<string, string>;
 }
-export type WorkerKind = "codex" | "claude" | "grok";
-export interface Worker {
-  kind?: WorkerKind;
-  id: string;
-  name: string;
-  prompt: string;
-  repo: string;
-  worktree: string;
-  branch: string;
-  baseBranch?: string;
-  baseCommit?: string;
-  setupInstructions?: string;
-  recoveryAttempts?: number;
-  recoveryHold?: boolean;
-  holdId?: string;
-  nextRecoveryAt?: number;
-  taskId?: string;
-  taskUrl?: string;
-  projectId?: string;
-  projectUnconfirmed?: boolean;
-  conversationId: string;
-  paneId?: string;
-  idleSince?: number;
-  archivedAt?: number;
-  sessionId?: string;
-  sessionEvidenceReference?: string;
-  recoveryEpoch?: number;
-  archiveRequestedAt?: number;
-  state: string;
-  result?: string;
-  priorResult?: string;
-  generation?: number;
-  error?: string;
-  observedAt: number;
-  createdAt: number;
-  routineApproval?: { receiptId: string; generation: number; paneId: string; actionDigest: string; status: "sending" | "accepted" | "uncertain"; at: number };
-}
-export interface Delivery {
-  blockedReason?: string;
-  recoveryNotice?: boolean;
-  id: string;
-  workerId: string;
-  text: string;
-  status: "queued" | "sending" | "sent" | "uncertain" | "superseded";
-  createdAt: number;
-}
 export interface Outbox {
-  commentOnly?: boolean;
-  requestedTaskStatus?: string;
-  reconciliationHttpStatus?: number;
-  blockedReason?: string;
-  httpStatus?: number;
-  rejectionKind?: string;
-  incidentIds?: string[];
-  reviewNotification?: boolean;
   id: string;
   path: string;
   body: Record<string, unknown>;
-  status:
-    | "pending"
-    | "sending"
-    | "sent"
-    | "uncertain"
-    | "superseded"
-    | "failed";
+  status: "pending" | "sending" | "sent" | "uncertain" | "failed";
+  requestedTaskStatus?: string;
+  commentOnly?: boolean;
+  blockedReason?: string;
+  httpStatus?: number;
+  rejectionKind?: string;
+  reconciliationHttpStatus?: number;
   attempts?: number;
   retryAt?: number;
   lastError?: string;

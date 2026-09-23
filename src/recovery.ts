@@ -70,7 +70,7 @@ export function failureText(kind: string): string {
     recovery_required: "The previous turn stopped without a confirmed completion.",
     recovery_limit: "The bounded recovery limit was reached.",
   };
-  return `${reasons[kind] ?? protocolFailureText(kind) ?? "The runner could not finish this turn."} Existing workers and actions remain tracked. Inspect completed actions and uncertain deliveries before requesting recovery; do not start duplicate work.`;
+  return `${reasons[kind] ?? protocolFailureText(kind) ?? "The runner could not finish this turn."} Existing actions remain tracked. Inspect completed actions and uncertain deliveries before continuing; do not start duplicate work.`;
 }
 
 // Only the host supervisor calls this after checking the pane process and unit.
@@ -98,7 +98,7 @@ export function reconcileDeadTurn(
         (saved.error !== undefined && typeof saved.error !== "string") || (!saved.error && !saved.text.trim()))) throw new Error("Invalid completion");
     if (turn && (!valid(turn) || typeof turn.launched !== "boolean")) throw new Error("Invalid turn receipt");
     const thread = saved?.threadId ?? turn?.threadId;
-    if (!["review","incident"].includes(job.kind) && typeof thread === "string") runtime.state.put("threads", job.conversationId, thread);
+    if (typeof thread === "string") runtime.state.put("threads", job.conversationId, thread);
     if (saved) runtime.completeJob(id, saved.text as string, saved.error as string | undefined);
     else if (typeof turn?.failure === "string" && protocolFailureText(turn.failure)) runtime.completeJob(id, failureText(turn.failure), turn.failure);
     else if (turn?.completed === true && existsSync(`${directory}/${stem}.txt`)) {
