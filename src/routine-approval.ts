@@ -1,3 +1,5 @@
+import {ControlConflict} from "./control-error.ts";
+import {claudeGutterDialog} from "./claude-dialog.ts";
 import { createHash } from "node:crypto";
 import { State, record, textField, type Conversation, type Job, type Worker } from "./state.ts";
 import { WorkerHolds } from "./worker-holds.ts";
@@ -21,6 +23,8 @@ function selectedOption(line: string): string | undefined {
   return canonical(line.replace(/^(?:❯|>|›)\s*/u, "").replace(/\s*\(SELECTED\)\s*$/i, "").replace(/^\d+[.)]\s*/, "").replace(/[.!:]+$/, "")).toLowerCase();
 }
 export function recognizedDialog(text: string): { action: string; selected: string } | undefined {
+  const gutter = claudeGutterDialog(text);
+  if (gutter) return gutter.selected === "yes" ? {action: gutter.action, selected: "yes"} : undefined;
   const lines = canonical(text).split("\n");
   const prompts = lines.flatMap((line, index) => /do you want to proceed\?\s*$/i.test(line) ? [index] : []);
   const prompt = prompts.at(-1);
@@ -89,15 +93,18 @@ export async function approveRoutine(
   workerEvent = false,
 ): Promise<Record<string, unknown>> {
   if ((!workerEvent && job.kind !== "chat") || (workerEvent && job.kind !== "worker") || job.status !== "in_progress")
-    throw new Error(workerEvent ? "Routine approval requires an owned worker event" : "Routine approval requires the active owner chat");
+    throw new ControlConflict(workerEvent ? "Routine approval requires an owned worker event" : "Routine approval requires the active owner chat");
   const conversation = runtime.state.get<Conversation>("conversations", job.conversationId);
   const owning = runtime.state.get<Conversation>("conversations", worker.conversationId);
   if (!conversation || !owning || conversation.owner !== owning.owner ||
       conversation.metadata.sokosumi_organization_id !== owning.metadata.sokosumi_organization_id ||
       worker.conversationId !== job.conversationId)
-    throw new Error("Worker approval is outside the owning conversation or organization");
-  if (!worker.paneId || !worker.taskId) throw new Error("An assigned live worker pane is required");
+    throw new ControlConflict("Worker approval is outside the owning conversation or organization");
+  if (!worker.paneId || !worker.taskId) throw new ControlConflict("An assigned live worker pane is required");
   const evidence = record(input);
+  const required = ["actionDigest", "authorizationReference", "category", "key", "actionText", "dialogFingerprint"];
+  if (required.some(key => typeof evidence[key] !== "string" || !evidence[key]))
+    throw new ControlConflict("Routine approval needs exact evidence fields: " + required.join(", "));
   const actionDigest = textField(evidence, "actionDigest");
   const reference = textField(evidence, "authorizationReference");
   const category = textField(evidence, "category");
@@ -105,53 +112,92 @@ export async function approveRoutine(
   const evidenceActionText = textField(evidence, "actionText");
   const dialogFingerprint = textField(evidence, "dialogFingerprint");
   if (evidence.routine !== true || !categories.has(category) || key !== "enter" ||
-      !digest.test(actionDigest) || !digest.test(dialogFingerprint) || !reference || reference.length > 1000 || evidenceActionText.length > 2000)
-    throw new Error("Routine approval needs a bounded authorized category, exact dialog fingerprint, and enter key");
+      !digest.test(actionDigest) || !digest.test(dialogFingerprint) || reference.length > 1000 || evidenceActionText.length > 2000)
+    throw new ControlConflict("Routine approval needs a bounded authorized category, exact dialog fingerprint, and enter key");
   const hold = worker.holdId ? runtime.state.get<import("./worker-holds.ts").WorkerHold>("workerHolds", worker.holdId) : undefined;
   if (!hold || hold.actionTextVersion !== ACTION_TEXT_VERSION || hold.workerId !== worker.id || hold.generation !== (worker.generation ?? 0) ||
-      hold.paneId !== worker.paneId || hold.conversationId !== conversation.id || hold.owner !== conversation.owner ||
-      hold.organization !== conversation.metadata.sokosumi_organization_id || hold.actionDigest !== actionDigest || hold.decision)
-    throw new Error("Exact recorded worker-dialog provenance is required; historical or unknown holds remain blocked");
+      hold.paneId !== worker.paneId || hold.taskId !== worker.taskId || hold.conversationId !== conversation.id || hold.owner !== conversation.owner ||
+      hold.organization !== conversation.metadata.sokosumi_organization_id || hold.actionDigest !== actionDigest || hold.decision || hold.resolvedAt)
+    throw new ControlConflict("Exact recorded worker-dialog provenance is required; historical or unknown holds remain blocked");
+  if (hold.dialogFingerprint && hold.dialogFingerprint !== dialogFingerprint)
+    throw new ControlConflict("Recorded dialog changed; inspect the hold rather than replacing its evidence");
+  const assertCurrent = () => {
+    const current = runtime.state.get<Worker>("workers", worker.id);
+    const currentC = runtime.state.get<Conversation>("conversations", conversation.id);
+    const currentJob = runtime.state.get<Job>("jobs", job.id);
+    const currentHold = runtime.state.get<typeof hold>("workerHolds", hold.id);
+    if (!current || current.paneId !== worker.paneId || current.generation !== worker.generation || current.taskId !== worker.taskId ||
+        current.name !== worker.name || current.worktree !== worker.worktree || current.kind !== worker.kind || current.conversationId !== conversation.id ||
+        current.holdId !== hold.id || !current.recoveryHold || currentHold?.resolvedAt || currentHold?.decision ||
+        JSON.stringify(currentHold) !== JSON.stringify(hold) || currentC?.owner !== conversation.owner ||
+        currentC?.metadata.sokosumi_organization_id !== conversation.metadata.sokosumi_organization_id ||
+        currentJob?.status !== "in_progress" || currentJob.generation !== job.generation || currentJob.conversationId !== job.conversationId || currentJob.kind !== job.kind)
+      throw new ControlConflict("Worker identity, owner, job or hold changed during approval; inspect again");
+  };
+  assertCurrent();
   const task = await runtime.assertAssigned(worker.taskId);
   runtime.assertTaskOwner(task, conversation);
+  assertCurrent();
+  // Retain the deployed receipt key: changing it could replay an older uncertain key.
   const receiptId = createHash("sha256").update(JSON.stringify([worker.id, worker.generation ?? 0, worker.paneId, actionDigest])).digest("hex");
-  const prior = runtime.state.get<{status: string}>("routineApprovals", receiptId);
-  if (prior?.status === "accepted") return { status: "accepted", keySent: false, receiptId, workerId: worker.id, note: "This approval receipt was already accepted; no key was replayed." };
-  if (prior?.status === "sending" || prior?.status === "uncertain") throw new Error("Approval outcome is uncertain; inspect before retrying");
+  const prior = runtime.state.get<{status: string; holdId?: string; sessionId?: string; dialogFingerprint?: string}>("routineApprovals", receiptId);
+  if (prior?.status === "sending" || prior?.status === "uncertain") throw new ControlConflict("Approval outcome is uncertain; inspect the same session and reconcile real decision evidence, never resend the key");
+  if (prior?.status === "accepted") {
+    if ((prior.holdId && prior.holdId !== hold.id) || (prior.sessionId && prior.sessionId !== evidence.sessionId) || prior.dialogFingerprint !== dialogFingerprint)
+      throw new ControlConflict("Existing one-time approval receipt differs; no key replayed");
+    return { status: "accepted", keySent: false, receiptId, workerId: worker.id, note: "Key transport was already acknowledged; verify command outcome separately. No key replayed." };
+  }
   const live = await runtime.workerAgent(worker);
-  if (!live || live.agent_status !== "blocked") throw new Error("The exact owned worker dialog is no longer blocked");
+  if (!live || live.agent_status !== "blocked") throw new ControlConflict("The exact owned worker dialog is no longer blocked; reconcile its real decision instead");
   const dialog = await runtime.herdr.call(["agent", "read", worker.paneId, "--source", "recent-unwrapped", "--lines", "80"]);
-  const dialogText = typeof dialog.text === "string" ? dialog.text : JSON.stringify(dialog);
+  const dialogText = typeof dialog.text === "string" ? dialog.text : "";
   const parsed = recognizedDialog(dialogText);
-  if (!parsed) throw new Error("The worker dialog format or selected option is not recognized as a routine approval");
-  const observedFingerprint = createHash("sha256").update(dialogText).digest("hex");
-  if (observedFingerprint !== dialogFingerprint) throw new Error("The inspected worker dialog changed; no approval key sent");
-  const observedActionDigest = createHash("sha256").update(canonical(parsed.action)).digest("hex");
-  if (!hold.actionTextDigest || observedActionDigest !== hold.actionTextDigest) throw new Error("The live dialog action does not match the recorded routine action");
-  if (canonical(evidenceActionText) !== canonical(parsed.action)) throw new Error("Approval evidence action does not match the inspected worker dialog");
-  const current = runtime.state.get<Worker>("workers", worker.id);
-  if (!current || current.paneId !== worker.paneId || current.generation !== worker.generation)
-    throw new Error("Worker identity changed during approval");
-  runtime.state.put("routineApprovals", receiptId, { receiptId, workerId: worker.id, jobId: job.id, generation: worker.generation ?? 0, paneId: worker.paneId, actionDigest, dialogFingerprint, reference, category, status: "sending", at: Date.now() });
+  if (!parsed) throw new ControlConflict("The worker dialog format or selected option is unsupported; inspect-worker-hold and select only a known one-time Yes through the authorized human/provider flow");
+  const gutter = claudeGutterDialog(dialogText);
+  if (gutter || worker.kind === "claude" || hold.sessionId) {
+    if (workerEvent) throw new ControlConflict("This Claude routine flow requires the exact active owner chat; worker events cannot authorize this layout");
+    if (!live.agent_session_id || !hold.sessionId || evidence.sessionId !== live.agent_session_id || hold.sessionId !== live.agent_session_id ||
+        evidence.holdId !== hold.id || evidence.generation !== (worker.generation ?? 0) || evidence.paneId !== worker.paneId || hold.dialogFingerprint !== dialogFingerprint)
+      throw new ControlConflict("Exact recorded hold/session/generation/pane/fingerprint binding required; inspect-worker-hold then record-worker-hold");
+  }
+  if (createHash("sha256").update(dialogText).digest("hex") !== dialogFingerprint)
+    throw new ControlConflict("The inspected worker dialog changed; no approval key sent");
+  if (!hold.actionTextDigest || createHash("sha256").update(canonical(parsed.action)).digest("hex") !== hold.actionTextDigest || canonical(evidenceActionText) !== canonical(parsed.action))
+    throw new ControlConflict("The live dialog action does not match the recorded routine action");
+  const finalLive = await runtime.workerAgent(worker);
+  if (!finalLive || finalLive.agent_status !== "blocked" || finalLive.agent_session_id !== live.agent_session_id)
+    throw new ControlConflict("Worker session or dialog changed before approval; no key sent");
+  const finalDialog = await runtime.herdr.call(["agent", "read", worker.paneId, "--source", "recent-unwrapped", "--lines", "80"]);
+  if (typeof finalDialog.text !== "string" || createHash("sha256").update(finalDialog.text).digest("hex") !== dialogFingerprint)
+    throw new ControlConflict("The inspected worker dialog changed before approval; no key sent");
+  const receipt = {receiptId, workerId: worker.id, jobId: job.id, owner: conversation.owner, organization: hold.organization,
+    taskId: worker.taskId, holdId: hold.id, sessionId: live.agent_session_id, generation: worker.generation ?? 0,
+    paneId: worker.paneId, actionDigest, dialogFingerprint, reference, category, at: Date.now()};
+  runtime.state.transaction(() => {
+    assertCurrent();
+    if (runtime.state.get("routineApprovals", receiptId)) throw new ControlConflict("Approval receipt already reserved; inspect it before retrying");
+    runtime.state.put("routineApprovals", receiptId, {...receipt, status: "sending"});
+  });
   try {
-    await runtime.herdr.call(["agent", "send-keys", worker.paneId, key]);
-  } catch (error) {
-    runtime.state.put("routineApprovals", receiptId, { receiptId, workerId: worker.id, jobId: job.id, generation: worker.generation ?? 0, paneId: worker.paneId, actionDigest, dialogFingerprint, reference, category, status: "uncertain", at: Date.now(), error: String(error).slice(0, 500) });
-    throw new Error("Approval key outcome is uncertain; inspect the exact pane before retrying");
+    await runtime.herdr.call(["agent", "send-keys", worker.paneId, "enter"]);
+  } catch {
+    runtime.state.put("routineApprovals", receiptId, {...receipt, status: "uncertain"});
+    throw new ControlConflict("Approval key outcome is uncertain; inspect the same session and reconcile real decision evidence, never resend the key");
   }
   runtime.state.transaction(() => {
-    runtime.state.put("routineApprovals", receiptId, { receiptId, workerId: worker.id, jobId: job.id, generation: worker.generation ?? 0, paneId: worker.paneId, actionDigest, dialogFingerprint, reference, category, status: "accepted", at: Date.now() });
-    const approvedHold = runtime.state.get<import("./worker-holds.ts").WorkerHold>("workerHolds", worker.holdId!);
-    if (approvedHold) {
-      approvedHold.routineApprovedAt = Date.now();
-      approvedHold.routineApprovalReference = reference;
-      runtime.state.put("workerHolds", approvedHold.id, approvedHold);
+    runtime.state.put("routineApprovals", receiptId, {...receipt, status: "accepted"});
+    const approvedHold = runtime.state.get<typeof hold>("workerHolds", hold.id);
+    if (JSON.stringify(approvedHold) === JSON.stringify(hold)) {
+      approvedHold!.routineApprovedAt = Date.now();
+      approvedHold!.routineApprovalReference = reference;
+      runtime.state.put("workerHolds", hold.id, approvedHold);
+    }
+    const updated = runtime.state.get<Worker>("workers", worker.id);
+    if (updated && updated.paneId === worker.paneId && updated.generation === worker.generation && updated.holdId === hold.id) {
+      updated.routineApproval = { receiptId, generation: worker.generation ?? 0, paneId: worker.paneId!, actionDigest, status: "accepted", at: Date.now() };
+      runtime.state.put("workers", updated.id, updated);
     }
   });
-  const updated = runtime.state.get<Worker>("workers", worker.id);
-  if (updated && updated.paneId === worker.paneId && updated.generation === worker.generation) {
-    updated.routineApproval = { receiptId, generation: worker.generation ?? 0, paneId: worker.paneId, actionDigest, status: "accepted", at: Date.now() };
-    runtime.state.put("workers", updated.id, updated);
-  }
-  return { status: "accepted", receiptId, workerId: worker.id, generation: worker.generation ?? 0 };
+  return { status: "accepted", receiptId, workerId: worker.id, generation: worker.generation ?? 0,
+    note: "One-time key transport acknowledged. Keep the hold until the command outcome and closed same-session dialog are verified." };
 }

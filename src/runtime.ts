@@ -1904,14 +1904,19 @@ export class Runtime implements ChatService {
       textField(body, "workerId"),
     );
     if (!worker || !this.ownsWorker(job, worker))
-      throw new Error("Worker not owned by this user");
+      throw new ControlConflict("Worker not owned by this user");
     if (action === "worker-approve-routine") {
       if (!((job.kind === "chat" && job.status === "in_progress") || (job.kind === "worker" && job.workerId === worker.id)))
-        throw new Error("Routine approval requires the exact active owner chat or claimed worker event");
-      if (this.workerOperations.has(worker.id)) throw new Error("Worker operation in progress");
+        throw new ControlConflict("Routine approval requires the exact active owner chat or claimed worker event");
+      if (this.workerOperations.has(worker.id)) throw new ControlConflict("Worker operation in progress; inspect the current receipt before retrying");
       this.workerOperations.add(worker.id);
       try {
+        if (!(this.config.workerKinds ?? ["codex", "claude"]).includes(worker.kind ?? "codex"))
+          throw new ControlConflict("Worker kind is disabled or unavailable; no approval key sent");
         return await approveRoutine(this, job, worker, body.evidence, job.kind === "worker");
+      } catch (error) {
+        if (error instanceof ControlConflict) throw error;
+        throw new ControlConflict("Routine approval verification failed; check task ownership, Herdr availability and the durable approval receipt before retrying");
       } finally {
         this.workerOperations.delete(worker.id);
       }
@@ -1938,11 +1943,13 @@ export class Runtime implements ChatService {
       const holds=new WorkerHolds(this.state);
       const savedHold=worker.holdId?this.state.get<import("./worker-holds.ts").WorkerHold>("workerHolds",worker.holdId):undefined;
       if(savedHold && (savedHold.owner!==c.owner || savedHold.organization!==(c.metadata.sokosumi_organization_id??"")))throw new ControlConflict("Hold scope changed");
-      if(action==="worker-hold")return {workerId:worker.id,generation:worker.generation??0,paneId:worker.paneId,approvalHold:Boolean(worker.recoveryHold),hold:savedHold,holdGeneration:savedHold?.generation,currentGeneration:worker.generation??0,generationChanged:Boolean(savedHold && savedHold.generation!==(worker.generation??0)),unknownProvenance:!savedHold?.actionDigest};
+      if(action==="worker-hold")return {routineApprovals:this.state.all<{workerId:string;generation:number}>("routineApprovals").filter(r=>r.workerId===worker.id && r.generation===(worker.generation??0)),workerId:worker.id,generation:worker.generation??0,paneId:worker.paneId,approvalHold:Boolean(worker.recoveryHold),hold:savedHold,holdGeneration:savedHold?.generation,currentGeneration:worker.generation??0,generationChanged:Boolean(savedHold && savedHold.generation!==(worker.generation??0)),unknownProvenance:!savedHold?.actionDigest};
       if(this.workerOperations.has(worker.id))throw new ControlConflict("Worker operation in progress");
       this.workerOperations.add(worker.id);
       try{
-        const input=record(body.evidence);
+        if(action!=="inspect-worker-hold" && (!body.evidence || typeof body.evidence!=="object" || Array.isArray(body.evidence)))
+          throw new ControlConflict("A private exact hold evidence object is required; inspect-worker-hold first");
+        const input=action==="inspect-worker-hold" ? {} : record(body.evidence);
         if(action==="reconcile-worker-hold" && savedHold?.resolvedAt){
           const current=this.state.get<Worker>("workers",worker.id)!;
           const currentC=this.state.get<Conversation>("conversations",c.id)!;
@@ -1956,6 +1963,9 @@ export class Runtime implements ChatService {
         else if(!worker.recoveryHold || !worker.paneId) throw new ControlConflict("No active retained worker hold to inspect");
         const live=await this.workerAgent(worker);
         if(!live || (action!=="reconcile-worker-hold" ? live.agent_status!=="blocked" : !["idle","done"].includes(live.agent_status)))throw new ControlConflict("Verify the exact blocked dialog or its closed idle/done session first");
+        const boundSession = savedHold?.sessionId;
+        if((worker.kind==="claude" || boundSession || input.sessionId!==undefined) && (!live.agent_session_id || (boundSession && boundSession!==live.agent_session_id) || (action!=="inspect-worker-hold" && input.sessionId!==live.agent_session_id)))
+          throw new ControlConflict("Exact live Claude sessionId is required and must match recorded evidence; inspect-worker-hold first");
         if(action!=="reconcile-worker-hold"){
           const pane=await this.herdr.call(["agent","read",worker.paneId!,"--source","recent-unwrapped","--lines","80"]);
           const paneText=typeof pane.text === "string" ? pane.text : JSON.stringify(pane);
@@ -1966,7 +1976,7 @@ export class Runtime implements ChatService {
             const currentC=this.state.get<Conversation>("conversations",c.id)!;
             if(current.generation!==worker.generation || current.paneId!==worker.paneId || current.taskId!==worker.taskId || current.holdId!==worker.holdId || !current.recoveryHold || currentC.owner!==c.owner || currentC.metadata.sokosumi_organization_id!==c.metadata.sokosumi_organization_id || this.job(job.id).status!=="in_progress")
               throw new ControlConflict("Worker hold identity changed during inspection");
-            inspection = {workerId:worker.id,holdId:worker.holdId,generation:worker.generation??0,paneId:worker.paneId,actionText:parsed.action,actionTextDigest:createHash("sha256").update(canonical(parsed.action)).digest("hex"),dialogFingerprint:createHash("sha256").update(paneText).digest("hex"),routineApprovalSupported:Boolean(recognizedDialog(paneText)),unknownProvenance:!savedHold?.actionDigest};
+            inspection = {sessionId:live.agent_session_id,workerId:worker.id,holdId:worker.holdId,generation:worker.generation??0,paneId:worker.paneId,actionText:parsed.action,actionTextDigest:createHash("sha256").update(canonical(parsed.action)).digest("hex"),dialogFingerprint:createHash("sha256").update(paneText).digest("hex"),routineApprovalSupported:Boolean(recognizedDialog(paneText)),unknownProvenance:!savedHold?.actionDigest};
           } else {
             const suppliedAction=textField(input,"actionText");
             const suppliedFingerprint=textField(input,"dialogFingerprint");
@@ -1980,10 +1990,16 @@ export class Runtime implements ChatService {
         }
         const finalLive=await this.workerAgent(worker);
         if(!finalLive || (action!=="reconcile-worker-hold" ? finalLive.agent_status!=="blocked" : !["idle","done"].includes(finalLive.agent_status)))throw new ControlConflict("Worker dialog changed during verification");
+        if(finalLive.agent_session_id!==live.agent_session_id) throw new ControlConflict("Worker session changed during verification; hold retained");
         if(action!=="reconcile-worker-hold") {
           const finalPane=await this.herdr.call(["agent","read",worker.paneId!,"--source","recent-unwrapped","--lines","80"]);
           if(typeof finalPane.text!=="string" || createHash("sha256").update(finalPane.text).digest("hex")!==(inspection?.dialogFingerprint ?? textField(input,"dialogFingerprint")))
             throw new ControlConflict("Worker dialog changed during verification; inspect again before recording");
+        }
+        if(action==="reconcile-worker-hold" && (worker.kind==="claude" || boundSession)) {
+          const closed=await this.herdr.call(["agent","read",worker.paneId!,"--source","recent-unwrapped","--lines","80"]);
+          if(typeof closed.text!=="string" || inspectHoldDialog(closed.text) || /do you want to proceed\?/i.test(closed.text))
+            throw new ControlConflict("Approval dialog is still visible or closure cannot be verified; human approval has not been confirmed, hold retained");
         }
         const current=this.state.get<Worker>("workers",worker.id)!;
         const currentC=this.state.get<Conversation>("conversations",c.id)!;

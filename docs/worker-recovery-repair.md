@@ -6,7 +6,7 @@ The worker, task, pane and generation remain unchanged when reusing the session.
 
 ## Exact hold inspection
 
-The supplied Claude Bash layout has a header, auto-mode tip, three-space `│ ` command gutter, separate description, approval notice and numbered options. The routine-approval parser rejects that layout; runtime errors were then hidden by HTTP as `500 Internal server error`. The regression uses synthetic paths and the described multiline shape, not a live pane capture.
+The supplied Claude Bash layout has a header, auto-mode tip, three-space `│ ` command gutter, separate description, approval notice and numbered options. The prior routine-approval parser rejected that layout; runtime errors were then hidden by HTTP as `500 Internal server error`. The regression uses synthetic paths and the described multiline shape, not a live pane capture.
 
 In an active owner chat for the exact conversation, use the scoped CLI:
 
@@ -19,13 +19,13 @@ Inspection returns the exact `actionText`, its `actionTextDigest`, raw-pane `dia
 
 For `record-worker-hold`, the coordinator supplies the inspection's binding, exact action and fingerprint plus the independently established `actionDigest` and private `evidenceReference` in its evidence JSON. Recording rereads the complete dialog after task verification; a changed dialog or identity produces a safe HTTP 409. Recognized hold validation conflicts are exposed; unexpected internal errors stay generic 500. Worker tokens remain limited to results, and autonomous jobs cannot inspect/record/resolve owner holds.
 
-The additional parser is for inspection/recording only. The new layout reports `routineApprovalSupported: false`; it remains unsupported for automated key approval. Human decisions must still occur through the existing authorized coordinator/human process. After a known decision and a verified closed idle/done dialog, the existing reconciliation operation requires real decision evidence. Never turn inspection output into a guessed approval. Legacy boolean-only holds remain unchanged; inspection does not create a hold identity or action provenance. Use the separately documented owner-authorized read-only legacy continuation when applicable; ordinary resume remains blocked.
+The bounded parser now supports a complete owner-chat-only one-time routine decision flow with structured session binding, two dialog reads and durable non-replay receipts. See [routine recovery acceptance](routine-recovery-acceptance.md) for exact evidence fields, independent-review bootstrap and the live acceptance matrix. Supporting the layout does not itself authorize the command. Never turn inspection output into a guessed approval. Legacy boolean-only holds remain unchanged; inspection does not create a hold identity or action provenance. Use the separately documented owner-authorized read-only legacy continuation when applicable; ordinary resume remains blocked.
 
 ## Independent review handoff
 
-Coordinator: arrange independent review of this focused branch. Do not replace held reviewers, revive canceled audits or superseded reviews, or assign this prerequisite worker the blocked-event feature. Its original worker retains that implementation. Review should specifically challenge lost startup acknowledgement, ambiguous live identities, restart/concurrent delivery receipts, changed-dialog checks, inspection-versus-approval separation, safe HTTP errors and preserved legacy/uncertain holds. No independent reviewer was launched by this worker.
+Coordinator: arrange independent review of this focused branch. Do not replace held reviewers, revive canceled audits or superseded reviews, or assign this prerequisite worker the blocked-event feature. Its original worker retains that implementation. Review should specifically challenge lost startup acknowledgement, ambiguous live identities, restart/concurrent delivery receipts, changed-dialog checks, exact routine authorization and one-time selection, safe HTTP errors and preserved legacy/uncertain holds. No independent reviewer was launched by this worker.
 
-Validation: Node 24.21.0 / npm 11.19.0, `npm ci --ignore-scripts`, `npm test` (231 passed), `npm run typecheck`, `node src/cli.ts --help`, `git diff --check`. Tests use temporary SQLite, synthetic Herdr/task data and local HTTP. No live pane, production state, decision, worker prompt or service was changed during validation.
+Validation: Node 24.21.0 / npm 11.19.0, `npm ci --ignore-scripts`, `npm test` (244 passed), `npm run typecheck`, `node src/cli.ts --help`, `git diff --check`. Tests use temporary SQLite, synthetic Herdr/task data and local HTTP. No live pane, production state, decision, worker prompt or service was changed during validation.
 
 ## Deployment and rollback procedure (coordinator-owned; not executed)
 

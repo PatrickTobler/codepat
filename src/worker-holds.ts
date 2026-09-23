@@ -7,6 +7,7 @@ export interface WorkerHold {
   conversationId:string;owner:string;organization:string;createdAt:number;
   actionDigest?:string;actionTextDigest?:string;actionTextVersion?:number;evidenceReference?:string;recordedByJob?:string;
   decision?:'approved'|'denied'|'cancelled';decisionReference?:string;resolvedAt?:number;
+  sessionId?:string;dialogFingerprint?:string;
   routineApprovedAt?:number;routineApprovalReference?:string;
   retiredDeliveryIds?:string[];resolvedByJob?:string;
 }
@@ -32,6 +33,10 @@ export class WorkerHolds {
     if(h.actionDigest && (h.actionDigest!==digest || h.evidenceReference!==reference))throw new ControlConflict('Recorded action evidence cannot be replaced');
     const actionTextDigest=actionText ? createHash('sha256').update(canonicalActionText(actionText)).digest('hex') : undefined;
     if(h.actionDigest && (h.actionTextDigest!==actionTextDigest && actionTextDigest))throw new ControlConflict('Recorded action evidence cannot be replaced');
+    if(h.sessionId && h.sessionId!==e.sessionId)throw new ControlConflict('Recorded action session changed; hold retained');
+    if(h.dialogFingerprint && h.dialogFingerprint!==e.dialogFingerprint)throw new ControlConflict('Recorded dialog fingerprint changed; hold retained');
+    if(typeof e.sessionId==='string')h.sessionId=e.sessionId;
+    if(typeof e.dialogFingerprint==='string')h.dialogFingerprint=e.dialogFingerprint;
     h.actionDigest=digest;if(actionTextDigest){h.actionTextDigest=actionTextDigest;h.actionTextVersion=ACTION_TEXT_VERSION;}h.evidenceReference=reference;h.recordedByJob=jobId;
     this.state.put('workerHolds',h.id,h);return {ok:true,holdId:h.id,actionDigest:digest};
   }
@@ -46,6 +51,14 @@ export class WorkerHolds {
       const decision=textField(evidence,'decision'),reference=textField(evidence,'decisionReference');
       const digest=textField(evidence,'actionDigest'), evidenceReference=textField(evidence,'evidenceReference');
       if(!['approved','denied','cancelled'].includes(decision) || reference.length>1000 || !/^[a-f0-9]{64}$/.test(digest))throw new ControlConflict('Known exact action and human decision evidence required');
+      const receiptId=createHash('sha256').update(JSON.stringify([w.id,w.generation??0,w.paneId,digest])).digest('hex');
+      const approval=this.state.get<{status:string;holdId?:string;sessionId?:string}>('routineApprovals',receiptId);
+      if(reference.startsWith('routine:') && (reference!==`routine:${receiptId}` || approval?.status!=='accepted' || approval.holdId!==h.id || approval.sessionId!==h.sessionId || decision!=='approved'))
+        throw new ControlConflict('Routine decision reference requires the exact accepted approval receipt; acknowledgement is not command success');
+      if(approval && ['sending','uncertain'].includes(approval.status)) {
+        if(evidence.approvalReceiptId!==receiptId || typeof evidence.keyOutcomeReference!=='string' || !evidence.keyOutcomeReference.trim() || evidence.keyOutcomeReference.length>1000)
+          throw new ControlConflict('Uncertain approval key requires exact approvalReceiptId and private keyOutcomeReference from actual inspection/human action; never replay it');
+      }
       if(h.routineApprovedAt && decision!=='approved')throw new ControlConflict('Routine approval was already accepted; denial or cancellation cannot be recorded');
       // A dialog can close before its action digest is recorded. An owner may
       // attest the exact action and decision together while the durable hold,
@@ -53,6 +66,7 @@ export class WorkerHolds {
       // applies to a legacy boolean-only hold with no hold receipt.
       if(!h.actionDigest){
         if(!evidenceReference || evidenceReference.length>1000)throw new ControlConflict('Closed dialog needs bounded action evidence reference');
+        if(typeof e.sessionId==='string')h.sessionId=e.sessionId;
         h.actionDigest=digest;h.evidenceReference=evidenceReference;
       } else if(evidence.actionDigest!==h.actionDigest)throw new ControlConflict('Known exact action and human decision evidence required');
       if(h.resolvedAt){
@@ -73,6 +87,7 @@ export class WorkerHolds {
       w.recoveryHold=false;
       if(decision!=='approved')w.state='stopped';
       else if(['blocked','recovery_blocked'].includes(w.state))w.state='idle';
+      if(approval)this.state.put('routineApprovals',receiptId,{...this.state.get<Record<string,unknown>>('routineApprovals',receiptId),reconciledAt:h.resolvedAt,decision,decisionReference:reference,keyOutcomeReference:evidence.keyOutcomeReference});
       this.state.put('workerHolds',h.id,h);this.state.put('workers',w.id,w);
       return {ok:true,holdId:h.id,decision:h.decision,resolvedAt:h.resolvedAt};
     });

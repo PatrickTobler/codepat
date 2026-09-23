@@ -11,6 +11,7 @@ export interface Agent {
   agent_name?: string;
   agent?: string;
   terminal_title?: string;
+  agent_session_id?: string;
 }
 export interface HerdrPort {
   call(args: string[]): Promise<Record<string, unknown>>;
@@ -39,6 +40,7 @@ export class Herdr implements HerdrPort {
       const item = record(value);
       return {
         pane_id: textField(item, "pane_id"),
+        agent_session_id: typeof item.agent_session_id === "string" ? item.agent_session_id : undefined,
         agent_status: textField(item, "agent_status"),
         cwd: typeof item.cwd === "string" ? item.cwd : undefined,
         name: typeof item.name === "string" ? item.name : undefined,

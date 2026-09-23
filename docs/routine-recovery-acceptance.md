@@ -1,0 +1,66 @@
+# Routine recovery: review and live acceptance
+
+This is a coordinator-run procedure, not evidence of deployment. Automated evidence uses temporary SQLite, synthetic task/Herdr responses and a reproduction of the reported Claude command `npm ci --ignore-scripts 2>&1 | tail -5`. No live held session was read, approved or resumed by the repair worker.
+
+## Exact routine decision flow
+
+Herdr 0.9.0's bundled API schema (protocol 22) exposes agent session metadata and `agent.send_keys`, but no structured permission decision or atomic fingerprint-conditional key operation. CodePat therefore parses a bounded Claude layout: one Bash command header, the known auto-mode tip, three-space `│ ` command gutters, one unboxed description, the approval notice, one proceed prompt, and four numbered choices. Only exactly selected choice **1. Yes** is eligible. Choices 2/3 (persistent and auto mode), No, multiple selections/dialogs and unknown boundaries are refused. Command newlines, pipes and interior whitespace are preserved. A narrow runtime operation sends one Enter only after authorization and all checks; this is not a generic raw-key workaround.
+
+In the active chat for the exact owning conversation, the coordinator performs:
+
+```sh
+node src/cli.ts worker-hold WORKER
+node src/cli.ts inspect-worker-hold WORKER
+node src/cli.ts record-worker-hold WORKER --file /private/action.json
+node src/cli.ts worker-approve-routine WORKER --file /private/approval.json
+```
+
+Use the existing owner job scope, never a worker token or copied master credentials. Inspection needs no evidence argument. It returns `holdId`, `generation`, `paneId`, `sessionId`, exact `actionText`, `actionTextDigest`, `dialogFingerprint` and `routineApprovalSupported`. Keep raw command/evidence output private. A supported layout is not by itself authorization or proof of a available session binding.
+
+`action.json` repeats the inspection binding, text and fingerprint, and includes `actionDigest` (the digest of the privately inspected exact request, normally the returned action-text digest) and `evidenceReference`. Preserve existing recorded evidence; do not overwrite a different action. `approval.json` repeats that binding and adds `routine: true`, `category` (`read-only`, `tests` or `dependency-install`), `key: "enter"`, and `authorizationReference` to the actual owner's authorization of this exact routine operation. The category/reference are trusted coordinator attestations, not a semantic safety classifier. Consequential/out-of-scope commands require a human decision and cannot be relabeled as routine.
+
+Approval rechecks task assignment/owner, local owner/organization, active job/generation, task/worker/name/worktree/kind, hold, pane, structured session ID, exact action and raw-pane fingerprint. A second read checks the dialog immediately before a transactional `sending` reservation; a changed record or concurrent reservation refuses the effect. The deployed receipt key is retained so an older uncertain receipt cannot be bypassed by a new key format. Accepted transport receipts survive restart and return without resending. `sending` or `uncertain` receipts never replay automatically. Worker reporting, periodic and incident scopes cannot approve; this new Claude flow additionally refuses autonomous worker-event authorization.
+
+After the command finishes, inspect the **same** session and actual command outcome. The hold remains until its dialog is closed and the session is idle/done. An idle classification with a still-visible proceed dialog is refused. Then:
+
+```sh
+node src/cli.ts reconcile-worker-hold WORKER --file /private/decision.json
+```
+
+The decision file repeats the hold/session/generation/pane/action binding and evidence reference. For an accepted routine receipt, use `decision: "approved"` and `decisionReference: "routine:RECEIPT_ID"`; the runtime verifies that exact accepted receipt against the hold/session. This records an already-authorized one-time decision, not command success. For a real human action, reference the privately witnessed exact decision instead. A claim that approval happened while the original UI remains blocked is not execution evidence. For a lost key acknowledgement, supply the exact `approvalReceiptId` and a bounded `keyOutcomeReference` to real inspected outcome/human-action evidence as well; the original uncertain receipt stays uncertain and non-replayable. Never substitute a guessed routine receipt. Legacy boolean-only holds are not converted or cleared.
+
+Expected approval/evidence conflicts return actionable HTTP 409 errors. Unknown layouts require a private current unwrapped capture and a reviewed parser fixture, not global auto mode or ad-hoc key input.
+
+## Independent-review bootstrap (before deploying this code)
+
+The existing Claude reviewer is still blocked in its original setup dialog according to the coordinator's latest observation. This patch cannot bootstrap its own approval. Keep the same reviewer, task, pane, session and hold; do not send another review prompt.
+
+1. The coordinator records the current exact command, session, hold and visible choice. Check whether a real one-time human decision has actually closed it. Prior chat assent alone does not establish that.
+2. A designated authorized human operator uses the **existing Claude permission UI** on the retained session to choose the inspected one-time Yes (or No if that is the actual decision). Do not use the unreviewed CLI, a raw-key script, auto mode, or clear the hold to get review running. This one-off bootstrap requires an available human/provider UI path; if none exists, independent review remains blocked and rollout must wait. It is not claimed to be automated. Patrick need not open a terminal if an authorized operator handles this initial UI action, but operator availability is a real prerequisite.
+3. The coordinator verifies dialog closure, same session and actual command outcome, then uses the **already deployed** owner-scoped `reconcile-worker-hold` with witnessed action/decision evidence. Its existing closed-dialog path accepts exact action evidence for a durable hold even when prior recording was unsupported. It cannot reconcile while still blocked. Preserve uncertain instruction effects. Let that same reviewer continue its existing review, with the updated head relayed through CodePat only after safe reconciliation.
+4. Review the complete PR head, including session adapter, parser/receipt races, error behavior and Grok restriction. Only after independent approval and CI should the coordinator deploy the reviewed pinned release, preserving `CODEPAT_WORKER_KINDS=codex,claude`, using the natural drain/backup/rollback procedure in `worker-recovery-repair.md`.
+
+The terminal-free routine-setup acceptance below applies **after** this reviewed activation. There is no claim that the currently blocked reviewer has resumed.
+
+## Acceptance matrix
+
+All live cells below are pending coordinator execution. Capture timestamps, release SHA, task/worker/job IDs, session/pane/generation, receipt IDs and private evidence references. Do not paste credentials or sensitive pane text into reports.
+
+| Journey | Synthetic evidence | Coordinator live acceptance and captured proof |
+| --- | --- | --- |
+| Start | Existing stable-operation and worker-kind tests; disallowed Grok fails before task/worktree/pane creation | Inspect advertised Codex/Claude. Reuse existing authorized workers/keys; no new worker is authorized by this repair. Record existing task/worker/worktree binding. Any separate fresh-start acceptance needs its own task authorization. |
+| Routine setup | Current Claude `npm ci` fixture; exact text/session/pane/hold/fingerprint and second-read checks | After review/deployment, use the next genuinely needed already-authorized setup command in an existing eligible worker. Inspect, record and approve selected one-time Yes under active owner scope. No Patrick terminal action. Capture accepted receipt, subsequent working output, and actual setup completion/exit evidence. The current `... | tail -5` pipeline's exit status alone is not proof `npm ci` succeeded. |
+| Blocked notification | Existing monitor/incident tests remain green | Capture the retained hold and coordinator notice receipt. Automatic actionable blocked-event implementation remains with its original author; it is a separate integration gate, not implemented here. No notice means escalation remains pending, not silent success. |
+| Owner decision | Persistent/global choices refused; no keys on scope/session/dialog changes; uncertain keys held | Capture actual owner authorization and accepted one-time routine receipt, or a real human decision. Still-visible old UI means decision execution unconfirmed. Reconcile only exact supported evidence after closure. |
+| Same-session continuation | Closure and same-session reconciliation, human-action and uncertain-outcome tests | Existing eligible held reviewer continues only after its supported exact decision reconciliation. Record unchanged worker/task/session/pane and continuing output. A queued prompt is not resumed work; avoid sending a new prompt when the original review is already progressing. |
+| Archive wake | Lost-start acknowledgement/reopened-state/concurrent-retry regression | Inspect stopped archived author `adee` and pending/uncertain deliveries first. Resume through owner scope only when the retained saved session is verified idle. Capture same worker/task/session/pane, one delivery ID, one normal generation advance at dispatch, no additional agent/tab/start, and actual resumed output. Same-job retry must return the existing delivery; new-job retries require explicit prior-delivery reconciliation. |
+| Worker result / task report | Existing result transaction and task-report/outbox reconciliation tests | Capture `worker-result` acceptance (local persistence only). Coordinator reviews result and uses the original task's `task-report` stable content/status. Capture `notificationId`, then poll the same report receipt until `status: sent` with HTTP/reconciliation evidence and verify the actual upstream event/task state. `pending`/`sending` is queued/in flight, not API acceptance; `uncertain` must be reconciled, never reposted blindly. |
+| Service interruption / restart | SQLite reopen, accepted/sending/uncertain key receipts, concurrent runtimes and archived prompt tests | During authorized maintenance at a natural drain, record release/identity/receipts before and after one bridge/idle-runner restart. Keep Herdr and workers running. Confirm same sessions and no additional delivery/key effects. Do not deliberately lose an acknowledgement or kill the live reviewer; fault injection is synthetic. |
+
+Suggested private evidence row: `{stage, releaseSha, observedAt, workerId, taskId, paneId, sessionId, generationBefore, generationAfter, deliveryId, approvalReceiptId, notificationId, transportStatus, apiHttpStatus, outcomeEvidenceReference}`. Mark each row **synthetic passed**, **live queued**, **live transport acknowledged**, **live work observed**, or **live API acceptance verified**. These are distinct claims.
+
+## Remaining limits and rollback
+
+Herdr offers no compare-and-send decision primitive; double inspection and the runtime lock minimize but cannot eliminate an external actor changing the UI between the final read and Enter. Do not concurrently manipulate a pane being approved. Missing structured session metadata, changed/persistent selections, unknown dialog variants, a new dialog appearing before the prior hold can be reconciled, or legacy provenance remain explicit holds. This patch does not bypass them to claim universal automation. Real Claude/Herdr integration, notification-to-owner orchestration and end-to-end upstream task delivery must pass the live matrix before claiming the whole journey works now.
+
+Preserve all new hold session/fingerprint fields and routine receipts on rollback. Older binaries do not enforce these bindings or the Grok allowlist: pause affected approval/recovery/hiring paths, preserve the current database and prefer a reviewed forward fix. Never downgrade and replay an old receipt, restore stale state, or clear a live hold to make rollback appear successful.
