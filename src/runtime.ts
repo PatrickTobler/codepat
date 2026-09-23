@@ -267,8 +267,8 @@ export class Runtime implements ChatService {
       (agent) => agent.pane_id === worker.paneId,
     );
     if (live && (live.name !== worker.name || live.cwd !== worker.worktree || (live.agent !== undefined && live.agent !== (worker.kind ?? "codex")) || (worker.sessionId !== undefined && live.agent_session_id !== worker.sessionId)))
-      throw new Error(
-        "Worker pane belongs to another agent; retained for inspection",
+      throw new ControlConflict(
+        "Worker pane belongs to another agent or its identity changed; hold and pane retained. Verify the original provider sessionId and inspect-worker-hold before continuing; no key sent",
       );
     return live;
   }
@@ -506,6 +506,8 @@ export class Runtime implements ChatService {
       this.workerOperations.add(snapshot.id);
       const worker = this.state.get<Worker>("workers", snapshot.id)!;
       try {
+        // A disabled/held/uncertain worker must not be changed or starve later cleanup.
+        this.guardWorkerRecovery(worker);
         await this.reconcileArchive(worker);
         if (
           !worker.paneId ||
@@ -538,6 +540,9 @@ export class Runtime implements ChatService {
         worker.archiveRequestedAt = undefined;
         worker.idleSince = undefined;
         this.state.put("workers", worker.id, worker);
+      } catch (error) {
+        if (!(error instanceof WorkerRecoveryBlocked || error instanceof ControlConflict)) throw error;
+        // Expected per-worker conflicts retain their state for owner inspection.
       } finally {
         this.workerOperations.delete(worker.id);
       }

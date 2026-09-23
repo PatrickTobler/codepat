@@ -38,7 +38,7 @@ async function fixture(t:TestContext, display=dialog, action=command){
   const state=new State(join(dir,'state.sqlite'));
   let text=display,status='blocked',session='synthetic-session',keys=0;
   const calls:string[][]=[];
-  const herdr={agents:async()=>[{pane_id:'pane',name:'worker',cwd:dir,agent_status:status,agent_session_id:session}],
+  const herdr={agents:async()=>[{pane_id:'pane',name:'worker',cwd:dir,agent:'claude',agent_status:status,agent_session_id:session}],
     call:async(args:string[]):Promise<Record<string,unknown>>=>{calls.push(args);if(args[1]==='read')return {text};if(args[1]==='send-keys'){keys++;return {};}throw new Error('unexpected effect');},prompt:async()=>{throw new Error('no instruction during approval');}};
   const runtime=new Runtime(state,herdr,{dataDir:dir,cliPath:'cli',repo:dir,apiUrl:'http://unused.invalid',coworkerId:'coworker'});
   runtime.api=async()=>({data:{ownerId:'owner',organizationId:'org',assigneeId:'coworker',status:'RUNNING'}});
@@ -200,4 +200,49 @@ test('multiline and literal tabs remain bound while CRLF is accepted as newline 
   assert.equal(canonicalActionText('printf "a\tb"\r\ntrue'),action);
   assert.notEqual(canonicalActionText(action),canonicalActionText(action.replace('\t',' ')));
   await f.call('worker-approve-routine',f.approval);assert.equal(f.keys(),1);
+});
+
+
+test('CLI/HTTP hold identity conflicts are actionable 409s; unexpected failures stay private',async t=>{
+  const f=await fixture(t);
+  const server=createCodePatServer({organizationId:'org',controlToken:'synthetic-master',service:f.runtime,authorizeControl:f.runtime.authorizeControl.bind(f.runtime),control:f.runtime.control.bind(f.runtime)});
+  server.listen(0,'127.0.0.1');await once(server,'listening');
+  t.after(()=>{server.closeAllConnections();server.close();});
+  const address=server.address();assert.ok(address && typeof address==='object');
+  const ownerConfig=f.runtime.scopedConfig({kind:'job',id:f.job.id,generation:f.job.generation??0});
+  const config=join(f.dir,'cli-http.json');writeFileSync(config,JSON.stringify({...JSON.parse(readFileSync(ownerConfig,'utf8')),url:`http://127.0.0.1:${address.port}`}),{mode:0o600});
+  const evidence=join(f.dir,'evidence.json');
+  writeFileSync(evidence,JSON.stringify({...f.evidence,decision:'approved',decisionReference:'private/witnessed-decision'}));
+  const before=f.state.get('workers',f.w.id),hold=f.state.all('workerHolds');
+  const agents=f.herdr.agents;
+  for(const drift of ['session','name','cwd','kind','internal']){
+    f.herdr.agents=async()=>{
+      if(drift==='internal')throw new Error('PRIVATE unexpected backend details');
+      return (await agents()).map(a=>({...a,...(drift==='session'?{agent_session_id:'replacement'}:drift==='name'?{name:'replacement'}:drift==='cwd'?{cwd:'/private/replacement'}:{agent:'grok'})}));
+    };
+    for(const action of ['inspect-worker-hold','record-worker-hold','reconcile-worker-hold']){
+      await assert.rejects(promisify(execFile)(process.execPath,[resolve('src/cli.ts'),action,f.w.id,...(action==='inspect-worker-hold'?[]:['--file',evidence])],{env:{...process.env,CODEPAT_CONFIG:config,CODEPAT_JOB_ID:f.job.id}}),(error:Error)=>{
+        assert.match(error.message,drift==='internal'?/\(500\).*Internal server error/s:/\(409\).*identity.*inspect/s);
+        assert.doesNotMatch(error.message,/PRIVATE unexpected|\/private\/replacement/);return true;
+      });
+      assert.deepEqual(f.state.get('workers',f.w.id),before);assert.deepEqual(f.state.all('workerHolds'),hold);
+      assert.equal(f.keys(),0);
+    }
+  }
+});
+
+test('accepted approval retry after session drift proves prior transport only and never releases hold',async t=>{
+  const f=await fixture(t);
+  const first=await f.call('worker-approve-routine',f.approval) as {receiptId:string};
+  f.setSession('replacement-session');f.closeDialog();
+  const retry=await f.call('worker-approve-routine',f.approval) as {receiptId:string;keySent:boolean;status:string};
+  assert.equal(retry.receiptId,first.receiptId);assert.equal(retry.status,'accepted');assert.equal(retry.keySent,false);
+  await assert.rejects(f.call('reconcile-worker-hold',{...f.evidence,decision:'approved',decisionReference:`routine:${first.receiptId}`}),{status:409});
+  assert.equal(f.keys(),1);assert.equal(f.state.get<Worker>('workers',f.w.id)!.recoveryHold,true);
+});
+test('ambiguous controls in scrollback outside the command refuse inspection and approval',async t=>{
+  const f=await fixture(t);f.setText('Earlier output\x07\n'+dialog);
+  await assert.rejects(f.call('inspect-worker-hold'),{status:409});
+  await assert.rejects(f.call('worker-approve-routine',f.approval),{status:409});
+  assert.equal(f.keys(),0);assert.equal(f.state.get<Worker>('workers',f.w.id)!.recoveryHold,true);
 });

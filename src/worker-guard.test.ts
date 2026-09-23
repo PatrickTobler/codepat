@@ -254,3 +254,23 @@ test('archived reuse requires structured provider kind and saved-session continu
     assert.equal(f.calls.length,0);assert.equal(f.prompts.length,0);
   }
 });
+
+
+test('cleanup skips disabled archived Grok and actually archives later eligible Codex',async t=>{
+  for(const requested of [1,undefined]){
+    const f=fixture(t);
+    const disabled={...f.w,kind:'grok' as const,result:'retained result',state:'completed',idleSince:1,archiveRequestedAt:requested};
+    const later={...f.w,id:'later',kind:'codex' as const,result:'done',state:'completed',idleSince:1,paneId:'pane2'};
+    f.state.put('workers',disabled.id,disabled);f.state.put('workers',later.id,later);
+    const retained=f.state.get('workers',disabled.id);
+    f.herdr.call=async args=>{f.calls.push(args);return args[1]==='list'?{panes:[]}:{};};
+    f.herdr.agents=async()=>[disabled,later].map(w=>({pane_id:w.paneId!,name:w.name,cwd:w.worktree,agent:w.kind,agent_status:'idle'}));
+    const now=10_000_000;
+    await f.runtime.cleanupWorkers(now);
+    assert.deepEqual(f.state.get('workers',disabled.id),retained,'disabled pane, history and archive marker retained');
+    const cleaned=f.state.get<Worker>('workers',later.id)!;
+    assert.equal(cleaned.archivedAt,now);assert.equal(cleaned.paneId,undefined);assert.equal(cleaned.result,'done');
+    assert.deepEqual(f.calls,[['pane','close','pane2']]);assert.deepEqual(f.prompts,[]);
+    await f.runtime.cleanupWorkers(now+1);assert.equal(f.calls.length,1,'no duplicate close');
+  }
+});
