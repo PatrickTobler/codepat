@@ -132,7 +132,7 @@ test('a real human action reconciles same session without an approval key; a cla
   assert.equal(f.state.get<Worker>('workers',f.w.id)!.recoveryHold,false);
 });
 test('Herdr adapter retains structured session identity without consulting session history',async()=>{
-  const herdr=new Herdr();herdr.call=async()=>({agents:[{pane_id:'pane',agent_status:'blocked',name:'worker',agent_session_id:'synthetic-session'}]});
+  const herdr=new Herdr();herdr.call=async()=>({agents:[{pane_id:'pane',agent_status:'blocked',name:'worker',agent:'claude',agent_session:{source:'herdr:claude',agent:'claude',kind:'id',value:'synthetic-session'}}]});
   assert.equal((await herdr.agents())[0].agent_session_id,'synthetic-session');
 });
 

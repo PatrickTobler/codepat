@@ -13,6 +13,21 @@ export interface Agent {
   terminal_title?: string;
   agent_session_id?: string;
 }
+// Herdr 0.9 AgentInfo exports a native reference, not the hook-input field.
+// A malformed or contradictory native reference must never fall back to a flat ID.
+export function providerSessionId(item: Record<string, unknown>): string | undefined {
+  const valid = (value: unknown): value is string => typeof value === "string" && /^[a-zA-Z0-9][a-zA-Z0-9-]{0,199}$/.test(value);
+  if (item.agent_session !== undefined && item.agent_session !== null) {
+    const ref = item.agent_session;
+    if (typeof ref !== "object" || Array.isArray(ref)) return undefined;
+    const session = ref as Record<string, unknown>;
+    if (!["codex", "claude", "grok"].includes(String(item.agent)) || session.agent !== item.agent || session.source !== `herdr:${item.agent}` || session.kind !== "id" || !valid(session.value)) return undefined;
+    if (item.agent_session_id !== undefined && item.agent_session_id !== session.value) return undefined;
+    return session.value;
+  }
+  // Retain compatibility with adapters exposing the earlier flat field.
+  return valid(item.agent_session_id) ? item.agent_session_id : undefined;
+}
 export interface HerdrPort {
   call(args: string[]): Promise<Record<string, unknown>>;
   agents(): Promise<Agent[]>;
@@ -40,7 +55,7 @@ export class Herdr implements HerdrPort {
       const item = record(value);
       return {
         pane_id: textField(item, "pane_id"),
-        agent_session_id: typeof item.agent_session_id === "string" ? item.agent_session_id : undefined,
+        agent_session_id: providerSessionId(item),
         agent_status: textField(item, "agent_status"),
         cwd: typeof item.cwd === "string" ? item.cwd : undefined,
         name: typeof item.name === "string" ? item.name : undefined,
