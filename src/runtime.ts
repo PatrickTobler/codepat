@@ -401,6 +401,26 @@ export class Runtime implements ChatService {
       throw new Error("Task is no longer assigned or executable");
     return task;
   }
+  async recoverTask(id: string): Promise<Job> {
+    const task = await this.assertAssigned(id);
+    const owner = textField(task, typeof task.ownerId === "string" ? "ownerId" : "userId");
+    const organizationId = textField(task, "organizationId");
+    let conversationId = this.state.get<string>("taskConversations", id);
+    if (!conversationId) {
+      conversationId = this.createConversation(owner, { taskId: id, sokosumi_organization_id: organizationId }).id;
+      this.state.put("taskConversations", id, conversationId);
+    } else {
+      const conversation = this.state.get<Conversation>("conversations", conversationId);
+      if (!conversation || conversation.owner !== owner || conversation.metadata.sokosumi_organization_id !== organizationId)
+        throw new Error("Task ownership or organization changed");
+    }
+    return this.state.enqueue({
+      conversationId,
+      kind: "task",
+      taskId: id,
+      input: `Recover this existing Sokosumi task. Inspect preserved work and attached resources before continuing. Task: ${JSON.stringify(task)}`,
+    }, `task-recover:${id}`);
+  }
   async pollTasks(): Promise<void> {
     if (!this.config.apiKey || !this.config.coworkerId) return;
     try {
@@ -672,6 +692,8 @@ export class Runtime implements ChatService {
           .all<Job>("jobs")
           .filter((j) => j.status === "queued").length,
       };
+    if (action === "task-recover")
+      return { job: await this.recoverTask(textField(body, "taskId")) };
     const job = this.job(textField(body, "jobId"));
     if (action === "begin-turn") {
       if (job.status !== "in_progress" || this.state.get("claims", job.id) !== body.runnerId || job.turnStarted)

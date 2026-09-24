@@ -226,6 +226,21 @@ test("task runtimes support multiple external resources and explicit detach", as
   }
 });
 
+test("an assigned existing task can be recovered into the local queue exactly once", async () => {
+  const f = fixture();
+  try {
+    f.runtime.api = async () => ({ data: assignedTask });
+    const first = await f.runtime.control("task-recover", { taskId: "task-1" }) as { job: Job };
+    const second = await f.runtime.control("task-recover", { taskId: "task-1" }) as { job: Job };
+    assert.equal(first.job.id, second.job.id);
+    assert.equal(first.job.kind, "task");
+    assert.equal(f.runtime.conversationOwner(first.job.conversationId), "alice");
+    assert.equal(f.runtime.authorizeControl("unknown", "task-recover", { jobId: first.job.id }), false);
+  } finally {
+    f.close();
+  }
+});
+
 test("recovered reservation rotates the scoped credential generation", () => {
   const f = fixture();
   try {

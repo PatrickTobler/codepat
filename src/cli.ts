@@ -9,6 +9,7 @@ if (action === "--help" || action === "help" || !action) {
   console.log(`CodePat (Node 24)
 status | repositories | instances | projects | project <uuid>
 task-status
+task-recover <task-id> (owner/admin recovery; not available to a scoped turn)
 task-report <status> --file <comment.md>
 task-runtime list
 task-runtime attach --kind <herdr|external> --id <resource> --role <role>
@@ -27,6 +28,10 @@ function option(name: string): string {
 if (action === "task-project") {
   const config = record(JSON.parse(readFileSync(option("--owner-config"), "utf8")));
   console.log(JSON.stringify(await reassignOwnedTask(userApi(config), config, args[0], option("--project")), null, 2));
+  process.exit(0);
+}
+if (action === "task-recover") {
+  console.log(JSON.stringify(await control(action, { taskId: args[0] }), null, 2));
   process.exit(0);
 }
 const jobId = process.env.CODEPAT_JOB_ID;
