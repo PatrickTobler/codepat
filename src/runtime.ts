@@ -414,12 +414,16 @@ export class Runtime implements ChatService {
       if (!conversation || conversation.owner !== owner || conversation.metadata.sokosumi_organization_id !== organizationId)
         throw new Error("Task ownership or organization changed");
     }
+    const events = Array.isArray(task.events) ? task.events.map(record) : [];
+    const remoteRevision = events.length
+      ? textField(events.at(-1)!, "id")
+      : typeof task.updatedAt === "string" ? task.updatedAt : "initial";
     return this.state.enqueue({
       conversationId,
       kind: "task",
       taskId: id,
       input: `Recover this existing Sokosumi task. Inspect preserved work and attached resources before continuing. Task: ${JSON.stringify(task)}`,
-    }, `task-recover:${id}`);
+    }, `task-recover:${id}:${remoteRevision}`);
   }
   async pollTasks(): Promise<void> {
     if (!this.config.apiKey || !this.config.coworkerId) return;

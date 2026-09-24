@@ -229,13 +229,17 @@ test("task runtimes support multiple external resources and explicit detach", as
 test("an assigned existing task can be recovered into the local queue exactly once", async () => {
   const f = fixture();
   try {
-    f.runtime.api = async () => ({ data: assignedTask });
+    let eventId = "event-1";
+    f.runtime.api = async () => ({ data: { ...assignedTask, events: [{ id: eventId }] } });
     const first = await f.runtime.control("task-recover", { taskId: "task-1" }) as { job: Job };
     const second = await f.runtime.control("task-recover", { taskId: "task-1" }) as { job: Job };
     assert.equal(first.job.id, second.job.id);
     assert.equal(first.job.kind, "task");
     assert.equal(f.runtime.conversationOwner(first.job.conversationId), "alice");
     assert.equal(f.runtime.authorizeControl("unknown", "task-recover", { jobId: first.job.id }), false);
+    eventId = "event-2";
+    const followup = await f.runtime.control("task-recover", { taskId: "task-1" }) as { job: Job };
+    assert.notEqual(followup.job.id, first.job.id);
   } finally {
     f.close();
   }
