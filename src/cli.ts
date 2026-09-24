@@ -9,6 +9,7 @@ if (action === "--help" || action === "help" || !action) {
   console.log(`CodePat (Node 24)
 status | repositories | instances | projects | project <uuid>
 task-status
+task-create --project <uuid> --name <name> --description-file <path>
 task-recover <task-id> (owner/admin recovery; not available to a scoped turn)
 task-report <status> --file <comment.md>
 task-runtime list
@@ -48,6 +49,9 @@ switch (action) {
     break;
   case "task-report":
     body = { jobId, status: args[0], text: readFileSync(option("--file"), "utf8") };
+    break;
+  case "task-create":
+    body = { jobId, projectId: option("--project"), name: option("--name"), description: readFileSync(option("--description-file"), "utf8") };
     break;
   case "task-runtime":
     body = {

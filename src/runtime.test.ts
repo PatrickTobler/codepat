@@ -167,7 +167,7 @@ test("scoped turn credentials authorize only the small coordinator surface", () 
     const job = f.runtime.createResponse("alice", c.id, "work");
     const next = f.runtime.nextJob("runner", 1)!;
     const token = f.token(next.jobConfig);
-    for (const action of ["instances", "repositories", "projects", "project", "task-status", "task-report", "task-runtime", "progress"])
+    for (const action of ["instances", "repositories", "projects", "project", "task-create", "task-status", "task-report", "task-runtime", "progress"])
       assert.equal(f.runtime.authorizeControl(token, action, { jobId: job.id }), true, action);
     for (const action of ["start", "workers", "send", "resume", "read", "stop", "next", "reply", "begin-turn", "status", "recover-chat"])
       assert.equal(f.runtime.authorizeControl(token, action, { jobId: job.id }), false, action);
@@ -240,6 +240,38 @@ test("an assigned existing task can be recovered into the local queue exactly on
     eventId = "event-2";
     const followup = await f.runtime.control("task-recover", { taskId: "task-1" }) as { job: Job };
     assert.notEqual(followup.job.id, first.job.id);
+  } finally {
+    f.close();
+  }
+});
+
+test("chat task creation reconciles by marker and immediately queues the new task", async () => {
+  const f = fixture();
+  try {
+    const projectId = "019e7d0f-9a3e-770c-94df-197a31e9bfa5";
+    const conversation = f.runtime.createConversation("alice", { sokosumi_organization_id: "org" });
+    const chat = f.runtime.createResponse("alice", conversation.id, "create it");
+    f.runtime.nextJob("runner", 1);
+    const created: Record<string, unknown>[] = [];
+    f.runtime.api = async (path, method, body) => {
+      if (path.startsWith("/projects?")) return { data: [{ id: projectId }], meta: { pagination: { nextCursor: null } } };
+      if (path === `/projects/${projectId}`) return { data: { id: projectId } };
+      if (path.startsWith("/tasks?")) return { data: created, meta: { pagination: { nextCursor: null } } };
+      if (path === "/tasks" && method === "POST") {
+        const input = body as Record<string, unknown>;
+        const task = { id: "created-1", ...input, projectId, organizationId: "org", ownerId: "alice", assigneeId: "codepat" };
+        created.push(task);
+        return { data: task };
+      }
+      throw new Error(`Unexpected ${method} ${path}`);
+    };
+    const first = await f.runtime.control("task-create", { jobId: chat.id, projectId, name: "Small task", description: "Implement and verify the change." }) as { task: Record<string, unknown>; job: Job };
+    const second = await f.runtime.control("task-create", { jobId: chat.id, projectId, name: "Small task", description: "Implement and verify the change." }) as { job: Job };
+    assert.equal(first.task.id, "created-1");
+    assert.equal(second.job.id, first.job.id);
+    assert.equal(first.job.kind, "task");
+    assert.equal(first.job.status, "queued");
+    assert.match(String(created[0].description), new RegExp(`codepat-request:${chat.id}`));
   } finally {
     f.close();
   }

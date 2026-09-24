@@ -5,7 +5,7 @@ import {renderOperatingPrompt} from './operating-prompt.ts';
 test('installed coordinator instructions direct trusted Herdr operation with the small scoped surface', () => {
   const cli = '/synthetic/release/src/cli.ts', prompt = renderOperatingPrompt(cli);
   assert.ok(!prompt.includes('{{CLI}}'));
-  for (const tool of ['instances', 'repositories', 'projects', 'project <uuid>', 'task-status', 'task-report <STATUS>', 'task-runtime'])
+  for (const tool of ['instances', 'repositories', 'projects', 'project <uuid>', 'task-create', 'task-status', 'task-report <STATUS>', 'task-runtime'])
     assert.ok(prompt.includes(`node ${cli} ${tool}`), tool);
   for (const direction of ['herdr --skill', 'full host access', 'danger-full-access', 'never in prompts or results'])
     assert.ok(prompt.includes(direction), direction);

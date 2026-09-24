@@ -57,6 +57,7 @@ const SCOPED_ACTIONS = [
   "task-status",
   "task-report",
   "task-runtime",
+  "task-create",
 ];
 
 interface TaskResource {
@@ -425,6 +426,59 @@ export class Runtime implements ChatService {
       input: `Recover this existing Sokosumi task. Inspect preserved work and attached resources before continuing. Task: ${JSON.stringify(task)}`,
     }, `task-recover:${id}:${remoteRevision}`);
   }
+  async createTask(job: Job, body: Record<string, unknown>): Promise<{ task: Record<string, unknown>; job: Job }> {
+    if (job.kind !== "chat") throw new Error("Tasks can only be created from a chat request");
+    const conversation = this.state.get<Conversation>("conversations", job.conversationId);
+    if (!conversation) throw new Error("Conversation not found");
+    const organizationId = textField(conversation.metadata, "sokosumi_organization_id");
+    const projectId = textField(body, "projectId");
+    const name = textField(body, "name");
+    const description = textField(body, "description");
+    if (name.length > 200 || description.length > 20_000) throw new Error("Task text is too long");
+    const headers = this.contextHeaders(conversation);
+    await inspectProject(this.api.bind(this), projectId, headers);
+    const marker = `codepat-request:${job.id}`;
+    const find = async () => (await pages(
+      this.api.bind(this),
+      `/tasks?scope=owned&projectId=${encodeURIComponent(projectId)}`,
+      headers,
+    )).filter(task => typeof task.description === "string" && task.description.includes(marker));
+    let matches = await find();
+    if (matches.length > 1) throw new Error("Multiple tasks match this request");
+    let task = matches[0];
+    if (!task) {
+      try {
+        task = record((await this.api("/tasks", "POST", {
+          name,
+          description: `${description}\n\n${marker}`,
+          projectId,
+          coworkerId: this.config.coworkerId,
+          status: "READY",
+        }, headers)).data);
+      } catch (error) {
+        matches = await find();
+        if (matches.length !== 1) throw error;
+        task = matches[0];
+      }
+    }
+    if (task.projectId !== projectId || task.organizationId !== organizationId ||
+        (task.ownerId ?? task.userId) !== conversation.owner ||
+        (task.assigneeId ?? task.coworkerId) !== this.config.coworkerId)
+      throw new Error("Created task identity or assignment does not match the request");
+    const taskId = textField(task, "id");
+    let conversationId = this.state.get<string>("taskConversations", taskId);
+    if (!conversationId) {
+      conversationId = this.createConversation(conversation.owner, { taskId, sokosumi_organization_id: organizationId }).id;
+      this.state.put("taskConversations", taskId, conversationId);
+    }
+    const taskJob = this.state.enqueue({
+      conversationId,
+      kind: "task",
+      taskId,
+      input: `New Sokosumi task created from chat. Begin the work described by the task. Task: ${JSON.stringify(task)}`,
+    }, `task-created:${taskId}`);
+    return { task, job: taskJob };
+  }
   async pollTasks(): Promise<void> {
     if (!this.config.apiKey || !this.config.coworkerId) return;
     try {
@@ -746,6 +800,7 @@ export class Runtime implements ChatService {
       this.assertTaskOwner(task, this.taskConversation(job));
       return task;
     }
+    if (action === "task-create") return this.createTask(job, body);
     if (action === "task-runtime") {
       if (!job.taskId) throw new Error("No task in this request");
       const operation = textField(body, "operation");
