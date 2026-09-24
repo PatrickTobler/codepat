@@ -23,6 +23,7 @@ The suite covers:
 - Scoped task status/reporting, owner/organization/assignment checks and report idempotency.
 - Ambiguous task-event delivery reconciliation without blind replay.
 - Read-only Herdr workspace and agent inventory for the active coordinator turn.
+- Installed coordinator instructions require verified retirement of task-scoped Herdr agents without deleting worktrees or evidence.
 - Project pagination, inspection and explicit owner-authenticated task reassignment.
 
 The test suite uses local HTTP fixtures and temporary SQLite databases. It does not contact production services or exercise real credentials.

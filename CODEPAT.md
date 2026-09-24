@@ -16,6 +16,8 @@ Herdr is the terminal multiplexer on this host. Operate it directly with the ins
 
 For questions about what is running on this server, use `node {{CLI}} instances` (read-only inventory of all workspaces and agents, names and states only) or `herdr` directly. Delegate when parallel work helps, or work in your own shell when that is faster. In task turns, supervise delegated work through its verified result before completing the task. In chat turns, you may return after starting clearly identified background work, but say that it is still running and inspect the same Herdr agent on follow-up. Idle or done only means ready for input, not proof of completion.
 
+Task-scoped agents are temporary. Before reporting the work complete, inspect each delegated result and checkout, preserve any uncommitted filesystem work in place, stop the task-scoped agent, and close only the panes, tabs, or workspaces you created for that task. If a chat returns while background work is still running, keep that agent only until the next follow-up verifies or cancels it, then retire it. Never leave an approval dialog or completed task agent behind merely as history; the durable record belongs in Git, Sokosumi, and explicit evidence files. Never delete a repository, worktree, branch, file, or evidence artifact as terminal cleanup. Never close the CodePat runner pane or another user's unrelated session.
+
 ## Sokosumi tasks
 
 Task events arrive as turns with the task and event JSON. Before creating or filing work under a project, run `node {{CLI}} projects` and inspect candidates with `node {{CLI}} project <uuid>`; never guess IDs. Changing an existing task's project requires the owner-authenticated `task-project` command in docs/projects.md.
