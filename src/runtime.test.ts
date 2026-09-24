@@ -212,6 +212,30 @@ test("task runtimes attach arbitrary resources and wake the coordinator once whe
   }
 });
 
+test("task runtime wakes again after the same agent completes a later work cycle", async () => {
+  const f = fixture();
+  try {
+    const { job } = taskJob(f);
+    f.setAgents([{ pane_id: "w1:p9", agent_status: "working", agent: "codex", revision: 7 }]);
+    f.runtime.nextJob("runner", 1);
+    await f.runtime.control("task-runtime", { jobId: job.id, operation: "attach", kind: "herdr", resourceId: "w1:p9", role: "implementation" });
+    f.runtime.completeJob(job.id, "background work started");
+    f.setAgents([{ pane_id: "w1:p9", agent_status: "idle", agent: "codex", revision: 7 }]);
+    await f.runtime.pollTaskRuntimes();
+    assert.equal(f.state.all<Job>("jobs").length, 2);
+
+    const firstWake = f.runtime.nextJob("runner", 1)!;
+    f.setAgents([{ pane_id: "w1:p9", agent_status: "working", agent: "codex", revision: 7 }]);
+    await f.runtime.pollTaskRuntimes();
+    f.runtime.completeJob(firstWake.job.id, "continued the same agent");
+    f.setAgents([{ pane_id: "w1:p9", agent_status: "idle", agent: "codex", revision: 7 }]);
+    await f.runtime.pollTaskRuntimes();
+    assert.equal(f.state.all<Job>("jobs").length, 3);
+  } finally {
+    f.close();
+  }
+});
+
 test("task runtimes support multiple external resources and explicit detach", async () => {
   const f = fixture();
   try {

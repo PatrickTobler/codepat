@@ -69,6 +69,7 @@ interface TaskResource {
   revision?: number;
   seenWorking?: boolean;
   lastWake?: string;
+  cycle?: number;
   attachedAt: number;
 }
 interface TaskRuntime {
@@ -550,13 +551,17 @@ export class Runtime implements ChatService {
         const fingerprint = `${status}:${revision ?? ""}`;
         const wasWorking = resource.seenWorking || resource.status === "working";
         const settled = ["done", "idle", "blocked", "error", "missing"].includes(status);
+        if (status === "working" && resource.status !== "working") {
+          resource.cycle = (resource.cycle ?? 0) + 1;
+          resource.lastWake = undefined;
+        }
         if (wasWorking && settled && resource.lastWake !== fingerprint)
-          transitions.push(`${resource.resourceId} is ${status}`);
+          transitions.push(`${resource.resourceId} is ${status} after work cycle ${resource.cycle ?? 1}`);
         resource.provider = agent?.agent ?? resource.provider;
         resource.seenWorking = wasWorking || status === "working";
         resource.status = status;
         resource.revision = revision;
-        if (transitions.at(-1) === `${resource.resourceId} is ${status}`)
+        if (transitions.at(-1) === `${resource.resourceId} is ${status} after work cycle ${resource.cycle ?? 1}`)
           resource.lastWake = fingerprint;
       }
       if (transitions.length) {
@@ -832,6 +837,7 @@ export class Runtime implements ChatService {
           status: agent?.agent_status,
           revision: agent?.revision,
           seenWorking: agent?.agent_status === "working",
+          cycle: agent?.agent_status === "working" ? 1 : 0,
           attachedAt: Date.now(),
         });
       } else throw new Error("Invalid task runtime operation");
