@@ -185,6 +185,7 @@ function loop(ms: number, action: () => Promise<void>): void {
   void tick();
 }
 loop(5000, () => runtime.pollTasks());
+loop(5000, () => runtime.pollTaskRuntimes());
 loop(5000, () => runtime.flushOutbox());
 loop(10_000, () => ensureRunner());
 startedAt = 0;

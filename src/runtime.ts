@@ -56,7 +56,25 @@ const SCOPED_ACTIONS = [
   "instances",
   "task-status",
   "task-report",
+  "task-runtime",
 ];
+
+interface TaskResource {
+  kind: "herdr" | "external";
+  resourceId: string;
+  role: string;
+  provider?: string;
+  status?: string;
+  revision?: number;
+  seenWorking?: boolean;
+  lastWake?: string;
+  attachedAt: number;
+}
+interface TaskRuntime {
+  taskId: string;
+  conversationId: string;
+  resources: TaskResource[];
+}
 
 export class Runtime implements ChatService {
   state: State;
@@ -439,6 +457,42 @@ export class Runtime implements ChatService {
       this.pollError = String(error);
     }
   }
+  async pollTaskRuntimes(): Promise<void> {
+    const runtimes = this.state.all<TaskRuntime>("taskRuntimes");
+    if (!runtimes.some(runtime => runtime.resources.some(resource => resource.kind === "herdr"))) return;
+    const agents = await this.herdr.agents();
+    const byPane = new Map(agents.map(agent => [agent.pane_id, agent]));
+    for (const runtime of runtimes) {
+      const transitions: string[] = [];
+      for (const resource of runtime.resources) {
+        if (resource.kind !== "herdr") continue;
+        const agent = byPane.get(resource.resourceId);
+        const status = agent?.agent_status ?? "missing";
+        const revision = agent?.revision;
+        const fingerprint = `${status}:${revision ?? ""}`;
+        const wasWorking = resource.seenWorking || resource.status === "working";
+        const settled = ["done", "idle", "blocked", "error", "missing"].includes(status);
+        if (wasWorking && settled && resource.lastWake !== fingerprint)
+          transitions.push(`${resource.resourceId} is ${status}`);
+        resource.provider = agent?.agent ?? resource.provider;
+        resource.seenWorking = wasWorking || status === "working";
+        resource.status = status;
+        resource.revision = revision;
+        if (transitions.at(-1) === `${resource.resourceId} is ${status}`)
+          resource.lastWake = fingerprint;
+      }
+      if (transitions.length) {
+        const key = createHash("sha256").update(JSON.stringify(transitions)).digest("hex");
+        this.state.enqueue({
+          conversationId: runtime.conversationId,
+          kind: "task",
+          taskId: runtime.taskId,
+          input: `Attached task runtime changed state: ${transitions.join(", ")}. Inspect the resource output and continue or finish the task.`,
+        }, `task-runtime:${runtime.taskId}:${key}`);
+      }
+      this.state.put("taskRuntimes", runtime.taskId, runtime);
+    }
+  }
   contextHeaders(conversation: Conversation): Record<string, string> {
     return {
       "X-Context-User-Id": conversation.owner,
@@ -665,6 +719,43 @@ export class Runtime implements ChatService {
       );
       this.assertTaskOwner(task, this.taskConversation(job));
       return task;
+    }
+    if (action === "task-runtime") {
+      if (!job.taskId) throw new Error("No task in this request");
+      const operation = textField(body, "operation");
+      const runtime = this.state.get<TaskRuntime>("taskRuntimes", job.taskId) ?? {
+        taskId: job.taskId,
+        conversationId: job.conversationId,
+        resources: [],
+      };
+      if (operation === "list") return runtime;
+      const kind = textField(body, "kind");
+      if (!['herdr', 'external'].includes(kind)) throw new Error("Invalid task runtime kind");
+      const resourceId = textField(body, "resourceId");
+      if (operation === "detach") {
+        runtime.resources = runtime.resources.filter(resource => !(resource.kind === kind && resource.resourceId === resourceId));
+      } else if (operation === "attach") {
+        const role = textField(body, "role");
+        if (runtime.resources.some(resource => resource.kind === kind && resource.resourceId === resourceId))
+          throw new Error("Task runtime resource is already attached");
+        let agent: Awaited<ReturnType<HerdrPort["agents"]>>[number] | undefined;
+        if (kind === "herdr") {
+          agent = (await this.herdr.agents()).find(item => item.pane_id === resourceId);
+          if (!agent) throw new Error("Herdr resource does not exist");
+        }
+        runtime.resources.push({
+          kind: kind as TaskResource["kind"],
+          resourceId,
+          role,
+          provider: agent?.agent,
+          status: agent?.agent_status,
+          revision: agent?.revision,
+          seenWorking: agent?.agent_status === "working",
+          attachedAt: Date.now(),
+        });
+      } else throw new Error("Invalid task runtime operation");
+      this.state.put("taskRuntimes", job.taskId, runtime);
+      return runtime;
     }
     if (action === "task-report") {
       if (!job.taskId) throw new Error("No task in this request");

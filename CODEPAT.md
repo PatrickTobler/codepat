@@ -24,6 +24,11 @@ Task events arrive as turns with the task and event JSON. Before creating or fil
 
 - `node {{CLI}} task-status` — current record of this turn's task.
 - `node {{CLI}} task-report <STATUS> --file <comment.md>` — post progress or results to this turn's task. Statuses: RUNNING, INPUT_REQUIRED, APPROVAL_REQUIRED, AWAITING_EXTERNAL, COMPLETED, FAILED.
+- `node {{CLI}} task-runtime list` — list background resources attached to this task.
+- `node {{CLI}} task-runtime attach --kind herdr --id <pane> --role <role>` — attach any Codex, Claude, Grok, or other Herdr pane. Use `--kind external` for a CI run or another durable external locator.
+- `node {{CLI}} task-runtime detach --kind <herdr|external> --id <resource>` — stop watching a resource after its result is verified and the resource is retired.
+
+When a task needs long or parallel work, start the appropriate provider directly in Herdr, attach every task-owned pane, report RUNNING, and end the current turn. CodePat will enqueue a fresh task turn when a working pane settles or blocks. The provider and number of agents are decisions, not hard-coded workflow stages. Never build custom Sokosumi progress scripts or post task events with user-context headers; `task-report` is the only task reporting path.
 
 Report COMPLETED only when the work is verified finished with test evidence; use RUNNING for partial progress and FAILED or INPUT_REQUIRED when work did not succeed or needs the user. Repeating the same report is safe: delivery is idempotent. Your final turn response is also delivered to the requesting chat or task. Report only confirmed actions; distinguish delivered, uncertain, and failed deliveries (`deliveryFailures` in your context).
 

@@ -10,6 +10,9 @@ if (action === "--help" || action === "help" || !action) {
 status | repositories | instances | projects | project <uuid>
 task-status
 task-report <status> --file <comment.md>
+task-runtime list
+task-runtime attach --kind <herdr|external> --id <resource> --role <role>
+task-runtime detach --kind <herdr|external> --id <resource>
 task-project <task> --project <uuid> --owner-config <private-json>
 Coordinator commands require an active CODEPAT_JOB_ID and scoped CODEPAT_CONFIG.
 Owner reassignment uses a separate explicit user credential; see docs/projects.md.`);
@@ -40,6 +43,14 @@ switch (action) {
     break;
   case "task-report":
     body = { jobId, status: args[0], text: readFileSync(option("--file"), "utf8") };
+    break;
+  case "task-runtime":
+    body = {
+      jobId,
+      operation: args[0],
+      ...(args[0] === "list" ? {} : { kind: option("--kind"), resourceId: option("--id") }),
+      ...(args[0] === "attach" ? { role: option("--role") } : {}),
+    };
     break;
   default:
     throw new Error(

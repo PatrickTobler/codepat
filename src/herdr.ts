@@ -12,6 +12,7 @@ export interface Agent {
   agent?: string;
   terminal_title?: string;
   agent_session_id?: string;
+  revision?: number;
 }
 // Herdr 0.9 AgentInfo exports a native reference, not the hook-input field.
 // A malformed or contradictory native reference must never fall back to a flat ID.
@@ -65,6 +66,7 @@ export class Herdr implements HerdrPort {
           typeof item.terminal_title === "string"
             ? item.terminal_title
             : undefined,
+        revision: typeof item.revision === "number" ? item.revision : undefined,
       };
     });
   }

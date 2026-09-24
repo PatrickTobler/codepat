@@ -167,7 +167,7 @@ test("scoped turn credentials authorize only the small coordinator surface", () 
     const job = f.runtime.createResponse("alice", c.id, "work");
     const next = f.runtime.nextJob("runner", 1)!;
     const token = f.token(next.jobConfig);
-    for (const action of ["instances", "repositories", "projects", "project", "task-status", "task-report", "progress"])
+    for (const action of ["instances", "repositories", "projects", "project", "task-status", "task-report", "task-runtime", "progress"])
       assert.equal(f.runtime.authorizeControl(token, action, { jobId: job.id }), true, action);
     for (const action of ["start", "workers", "send", "resume", "read", "stop", "next", "reply", "begin-turn", "status", "recover-chat"])
       assert.equal(f.runtime.authorizeControl(token, action, { jobId: job.id }), false, action);
@@ -175,6 +175,52 @@ test("scoped turn credentials authorize only the small coordinator surface", () 
     assert.equal(f.runtime.authorizeControl("unknown", "instances", { jobId: job.id }), false);
     f.runtime.completeJob(job.id, "done");
     assert.equal(f.runtime.authorizeControl(token, "instances", { jobId: job.id }), false);
+  } finally {
+    f.close();
+  }
+});
+
+test("task runtimes attach arbitrary resources and wake the coordinator once when work settles", async () => {
+  const f = fixture();
+  try {
+    const { job } = taskJob(f);
+    f.setAgents([{ pane_id: "w1:p9", agent_status: "working", agent: "claude", name: "builder" }]);
+    f.runtime.nextJob("runner", 1);
+    await f.runtime.control("task-runtime", {
+      jobId: job.id,
+      operation: "attach",
+      kind: "herdr",
+      resourceId: "w1:p9",
+      role: "implementation",
+    });
+    const listed = await f.runtime.control("task-runtime", { jobId: job.id, operation: "list" }) as { resources: Array<{ resourceId: string; provider?: string }> };
+    assert.deepEqual(listed.resources.map(resource => [resource.resourceId, resource.provider]), [["w1:p9", "claude"]]);
+    f.runtime.completeJob(job.id, "Agent is still working.");
+
+    await f.runtime.pollTaskRuntimes();
+    assert.equal(f.state.all<Job>("jobs").length, 1);
+    f.setAgents([{ pane_id: "w1:p9", agent_status: "done", agent: "claude", name: "builder" }]);
+    await f.runtime.pollTaskRuntimes();
+    const jobs = f.state.all<Job>("jobs");
+    assert.equal(jobs.length, 2);
+    assert.equal(jobs[1].taskId, "task-1");
+    assert.match(jobs[1].input, /w1:p9.*done/);
+    await f.runtime.pollTaskRuntimes();
+    assert.equal(f.state.all<Job>("jobs").length, 2);
+  } finally {
+    f.close();
+  }
+});
+
+test("task runtimes support multiple external resources and explicit detach", async () => {
+  const f = fixture();
+  try {
+    const { job } = taskJob(f);
+    f.runtime.nextJob("runner", 1);
+    await f.runtime.control("task-runtime", { jobId: job.id, operation: "attach", kind: "external", resourceId: "ci:build-42", role: "verification" });
+    await f.runtime.control("task-runtime", { jobId: job.id, operation: "attach", kind: "external", resourceId: "vendor:job-7", role: "research" });
+    const detached = await f.runtime.control("task-runtime", { jobId: job.id, operation: "detach", kind: "external", resourceId: "ci:build-42" }) as { resources: Array<{ resourceId: string }> };
+    assert.deepEqual(detached.resources.map(resource => resource.resourceId), ["vendor:job-7"]);
   } finally {
     f.close();
   }
