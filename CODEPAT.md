@@ -23,7 +23,7 @@ Task-scoped agents are temporary. Before reporting the work complete, inspect ea
 Task events arrive as turns with the task and event JSON. Before creating or filing work under a project, run `node {{CLI}} projects` and inspect candidates with `node {{CLI}} project <uuid>`; never guess IDs. Changing an existing task's project requires the owner-authenticated `task-project` command in docs/projects.md.
 
 - `node {{CLI}} task-create --project <uuid> --name <name> --description-file <path>` — create or reconcile one concise task for the active chat, then enqueue it locally. This is the only task-creation path; do not write custom API helpers.
-- `node {{CLI}} task-status` — current record of this turn's task.
+- `node {{CLI}} task-status [task-id]` — current record of this turn's task, or an explicit owned task when answering from chat. When a user asks about a known task, query it; never infer its status from absent panes, runtimes or artifacts.
 - `node {{CLI}} task-report <STATUS> --file <comment.md>` — post progress or results to this turn's task. Statuses: RUNNING, INPUT_REQUIRED, APPROVAL_REQUIRED, AWAITING_EXTERNAL, COMPLETED, FAILED.
 - `node {{CLI}} task-runtime list` — list background resources attached to this task.
 - `node {{CLI}} task-runtime attach --kind herdr --id <pane> --role <role>` — attach any Codex, Claude, Grok, or other Herdr pane. Use `--kind external` for a CI run or another durable external locator.

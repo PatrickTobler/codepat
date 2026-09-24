@@ -301,6 +301,20 @@ test("chat task creation reconciles by marker and immediately queues the new tas
   }
 });
 
+test("a chat turn can inspect an explicit owned task instead of guessing from runtimes", async () => {
+  const f = fixture();
+  try {
+    const conversation = f.runtime.createConversation("alice", { sokosumi_organization_id: "org" });
+    const chat = f.runtime.createResponse("alice", conversation.id, "what happened to task-1?");
+    f.runtime.nextJob("runner", 1);
+    f.runtime.api = async () => ({ data: { ...assignedTask, status: "INPUT_REQUIRED" } });
+    const task = await f.runtime.control("task-status", { jobId: chat.id, taskId: "task-1" }) as Record<string, unknown>;
+    assert.equal(task.status, "INPUT_REQUIRED");
+  } finally {
+    f.close();
+  }
+});
+
 test("recovered reservation rotates the scoped credential generation", () => {
   const f = fixture();
   try {

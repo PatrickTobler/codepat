@@ -8,7 +8,7 @@ const [action, ...args] = process.argv.slice(2);
 if (action === "--help" || action === "help" || !action) {
   console.log(`CodePat (Node 24)
 status | repositories | instances | projects | project <uuid>
-task-status
+task-status [task-id]
 task-create --project <uuid> --name <name> --description-file <path>
 task-recover <task-id> (owner/admin recovery; not available to a scoped turn)
 task-report <status> --file <comment.md>
@@ -42,7 +42,9 @@ switch (action) {
   case "projects":
   case "repositories":
   case "instances":
+    break;
   case "task-status":
+    body = { jobId, ...(args[0] ? { taskId: args[0] } : {}) };
     break;
   case "project":
     body = { jobId, projectId: args[0] };
@@ -63,7 +65,7 @@ switch (action) {
     break;
   default:
     throw new Error(
-      "Usage: cli.ts status | repositories | instances | projects | project <uuid> | task-status | task-report <status> --file <comment.md>",
+      "Usage: cli.ts status | repositories | instances | projects | project <uuid> | task-status [task-id] | task-report <status> --file <comment.md>",
     );
 }
 console.log(JSON.stringify(await control(action, body), null, 2));

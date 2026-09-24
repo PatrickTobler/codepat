@@ -798,9 +798,15 @@ export class Runtime implements ChatService {
       return { observedAt: Date.now(), workspaces, agents };
     }
     if (action === "task-status") {
-      if (!job.taskId) throw new Error("No task in this request");
+      const requested = typeof body.taskId === "string" && body.taskId.trim()
+        ? body.taskId.trim()
+        : undefined;
+      if (job.kind === "task" && requested && requested !== job.taskId)
+        throw new Error("A task turn cannot inspect another task");
+      const taskId = job.taskId ?? requested;
+      if (!taskId) throw new Error("Supply the task ID to inspect from chat");
       const task = record(
-        (await this.api(`/tasks/${encodeURIComponent(job.taskId)}`)).data,
+        (await this.api(`/tasks/${encodeURIComponent(taskId)}`)).data,
       );
       this.assertTaskOwner(task, this.taskConversation(job));
       return task;
