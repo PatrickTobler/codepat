@@ -10,11 +10,16 @@ test('installed coordinator instructions direct trusted Herdr operation with the
   for (const direction of ['herdr --skill', 'full host access', 'danger-full-access', 'never in prompts or results'])
     assert.ok(prompt.includes(direction), direction);
   for (const lifecycle of [
+    'Never answer dialogs in unrelated panes',
+    'Resolve routine, non-consequential startup handshakes autonomously',
+    'installed, user-owned Herdr session-reporting hook',
+    'An `idle` label alone is not proof that startup completed',
     'Task-scoped agents are temporary',
     'stop the task-scoped agent',
     'close only the panes, tabs, or workspaces you created for that task',
     'Never delete a repository, worktree, branch, file, or evidence artifact as terminal cleanup',
   ]) assert.ok(prompt.includes(lifecycle), lifecycle);
+  assert.ok(!prompt.includes("Do not parse or answer another session's interactive dialogs"));
   for (const removed of ['worker-hold', 'worker-approve-routine', 'recover-chat', 'dm-send', 'incident-report', 'review-work', `${cli} start`, `${cli} send`])
     assert.ok(!prompt.includes(removed), `${removed} must be gone`);
 });
