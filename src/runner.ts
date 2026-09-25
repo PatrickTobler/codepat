@@ -138,7 +138,6 @@ async function report(state: string): Promise<void> {
 }
 await report("idle");
 await herdr.call(["pane", "rename", pane, "CodePat"]);
-await herdr.call(["agent", "rename", pane, "codepat"]);
 const heartbeat = setInterval(() => {
   void control("heartbeat").catch(() => undefined);
 }, 3000);

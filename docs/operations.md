@@ -13,6 +13,14 @@ flowchart LR
 
 ## Request lifecycle
 
+On a dedicated CodePat host, set `[session] resume_agents_on_restore = false`
+in Herdr's `config.toml` and reload its configuration. CodePat owns runner
+startup and task recovery. Native agent restoration can otherwise reopen an
+old interactive Codex session in the runner pane and prevent startup. This
+setting applies to all agent panes on that Herdr host; saved conversations
+remain available for explicit resume. Runner startup must not depend on
+Herdr recognizing an agent for a cosmetic display-name assignment.
+
 `main.ts` creates private state and controller credentials, renders `CODEPAT.md` into the coordinator directory, and maintains its Herdr workspace/runner without taking focus. Each conversation has a separate resumable Codex thread. Coordinator turns serialize; one supervised turn runs at a time. The runner executes each turn in a transient user service with a configurable one-hour default deadline and process-group cleanup. Persisted replies can be recovered after a bridge outage. A stale runner pane with a foreground process is retained instead of receiving a duplicate launch. When Codex cannot serve a turn before acting, the same supervised unit reruns it with Claude Code.
 
 Task polling and outbox flushing run every five seconds; the runner watchdog every ten. Overlapping ticks of the same loop are suppressed. Assigned Sokosumi task events create durable jobs deduplicated by event ID; self-authored events advance the cursor without creating work. Failed/inaccessible events do not permanently block the event cursor. User and Soko Bot comments enqueue a continuation even when the task is terminal; status-only terminal events and tasks assigned elsewhere do not enqueue a turn.
