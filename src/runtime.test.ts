@@ -333,6 +333,30 @@ test("lifecycle recovery is bounded and respects waiting tasks and active jobs",
   } finally { f.close(); }
 });
 
+test("READY tasks with a failed first turn get an inspection", async () => {
+  const f = fixture();
+  try {
+    const { job } = taskJob(f);
+    f.runtime.api = async () => ({ data: { ...assignedTask, status: "READY" } });
+    f.runtime.nextJob("runner", 1);
+    f.runtime.completeJob(job.id, "Could not start", "recovery_required");
+    await f.runtime.reconcileTasks(Date.now() + 600_000);
+    assert.equal(f.state.all<Job>("jobs").length, 2);
+  } finally { f.close(); }
+});
+
+test("a stale runner produces one visible queue alert without duplicating queued work", async () => {
+  const f = fixture();
+  try {
+    taskJob(f);
+    f.runtime.api = async () => ({ data: assignedTask });
+    await f.runtime.reconcileTasks(Date.now() + 600_000);
+    await f.runtime.reconcileTasks(Date.now() + 660_000);
+    assert.equal(f.state.all<Job>("jobs").length, 1);
+    assert.equal(f.state.all<Outbox>("outbox").filter(item => String(item.body.comment).includes("runner heartbeat")).length, 1);
+  } finally { f.close(); }
+});
+
 test("pending instructions survive failed turns and completion requires a disposition", async () => {
   const f = fixture();
   try {

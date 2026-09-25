@@ -137,6 +137,7 @@ export class Runtime implements ChatService {
   pollError?: string;
   reconciliationError?: string;
   runnerAt = 0;
+  private startedAt = Date.now();
   storageHealth(): { availableBytes: number; totalBytes: number; low: boolean } {
     const info = statfsSync(this.config.dataDir);
     const availableBytes = info.bavail * info.bsize;
@@ -865,16 +866,21 @@ export class Runtime implements ChatService {
         const pendingInputs = this.state.all<TaskInput>("taskInputs").filter(input => input.taskId === taskId && !input.acknowledgement);
         const resources = this.state.get<TaskRuntime>("taskRuntimes", taskId)?.resources ?? [];
         const active = jobs.some(job => ["queued", "in_progress"].includes(job.status));
+        const queued = jobs.find(job => job.status === "queued");
+        const queuedWithoutRunner = queued && now - queued.createdAt >= 300_000 && now - Math.max(this.runnerAt, this.startedAt) >= 60_000;
         const last = jobs.at(-1);
         const recent = last && now - (last.completedAt ?? last.submittedAt ?? last.createdAt) < 300_000;
         const supported = resources.some(resource => resource.kind === "external" || resource.status === "working");
         let issue: string | undefined;
-        if ((task.assigneeId ?? task.coworkerId) === this.config.coworkerId && !active && !recent) {
-          if (pendingInputs.length) issue = "Task instructions have no acknowledged disposition";
-          else if (task.status === "RUNNING" && !supported) issue = "Running task has no working resource or queued continuation";
+        if ((task.assigneeId ?? task.coworkerId) === this.config.coworkerId) {
+          if (queuedWithoutRunner) issue = "Queued task cannot start because the runner heartbeat is stale";
+          else if (!active && !recent) {
+            if (pendingInputs.length) issue = "Task instructions have no acknowledged disposition";
+            else if (["READY", "RUNNING"].includes(String(task.status)) && !supported) issue = "Executable task has no working resource or queued continuation";
+          }
         }
         const previous = this.state.get<TaskHealth>("taskHealth", taskId);
-        const episode = pendingInputs.length ? `input:${pendingInputs[0].id}` : jobs.filter(job => !job.input.startsWith("Task lifecycle check:")).at(-1)?.id ?? "initial";
+        const episode = queuedWithoutRunner ? `queue:${queued.id}` : pendingInputs.length ? `input:${pendingInputs[0].id}` : jobs.filter(job => !job.input.startsWith("Task lifecycle check:")).at(-1)?.id ?? "initial";
         const health: TaskHealth = {
           taskId, checkedAt: now, issue, episode,
           attempts: previous?.episode === episode ? previous.attempts : 0,
@@ -883,7 +889,12 @@ export class Runtime implements ChatService {
         };
         if (issue && now - (health.lastAttemptAt ?? 0) >= 300_000) {
           this.state.transaction(() => {
-            if (health.attempts < 2) {
+            if (queuedWithoutRunner) {
+              if (!health.alerted) {
+                this.reportTask(taskId, `${issue}. The original queued instructions are preserved. CodePat's runner supervisor is checking recovery; no duplicate work was queued.`, undefined, conversation.id);
+                health.alerted = true;
+              }
+            } else if (health.attempts < 2) {
               const attempt = health.attempts + 1;
               this.state.enqueue({
                 conversationId: conversation.id, taskId, kind: "task",
