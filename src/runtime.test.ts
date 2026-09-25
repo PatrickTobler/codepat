@@ -251,6 +251,160 @@ test("task runtimes support multiple external resources and explicit detach", as
   }
 });
 
+test("a worker blocked before first work wakes supervision once", async () => {
+  const f = fixture();
+  try {
+    const { job } = taskJob(f);
+    f.setAgents([{ pane_id: "w1:p9", agent_status: "blocked", agent: "claude" }]);
+    f.runtime.nextJob("runner", 1);
+    await f.runtime.control("task-runtime", { jobId: job.id, operation: "attach", kind: "herdr", resourceId: "w1:p9", role: "implementation" });
+    f.runtime.completeJob(job.id, "Waiting for startup");
+    await f.runtime.pollTaskRuntimes();
+    assert.equal(f.state.all<Job>("jobs").length, 2);
+    await f.runtime.pollTaskRuntimes();
+    assert.equal(f.state.all<Job>("jobs").length, 2);
+  } finally { f.close(); }
+});
+
+test("an idle startup gets a grace period and cannot attach to two tasks", async () => {
+  const f = fixture();
+  try {
+    const { job } = taskJob(f);
+    f.setAgents([{ pane_id: "w1:p9", agent_status: "idle", agent: "codex" }]);
+    f.runtime.nextJob("runner", 1);
+    await f.runtime.control("task-runtime", { jobId: job.id, operation: "attach", kind: "herdr", resourceId: "w1:p9", role: "implementation" });
+    f.runtime.completeJob(job.id, "Starting worker");
+    await f.runtime.pollTaskRuntimes();
+    assert.equal(f.state.all<Job>("jobs").length, 1);
+    const runtime = f.state.get<{resources: Array<{attachedAt:number}>}>("taskRuntimes", "task-1")!;
+    runtime.resources[0].attachedAt -= 61_000;
+    f.state.put("taskRuntimes", "task-1", runtime);
+    await f.runtime.pollTaskRuntimes();
+    assert.equal(f.state.all<Job>("jobs").length, 2);
+    const other = taskJob(f, "other");
+    f.state.put("jobs", other.job.id, { ...other.job, status: "in_progress" });
+    await assert.rejects(f.runtime.control("task-runtime", { jobId: other.job.id, operation: "attach", kind: "herdr", resourceId: "w1:p9", role: "implementation" }), /another task/);
+  } finally { f.close(); }
+});
+
+test("stranded running tasks recover once across restarts without repeating execution", async () => {
+  const f = fixture();
+  try {
+    const { job } = taskJob(f);
+    f.runtime.nextJob("runner", 1);
+    f.runtime.completeJob(job.id, "Implementation is underway");
+    f.runtime.api = async () => ({ data: assignedTask });
+    await f.runtime.reconcileTasks(Date.now() + 600_000);
+    const jobs = f.state.all<Job>("jobs");
+    assert.equal(jobs.length, 2);
+    assert.match(jobs[1].input, /Inspect.*before/i);
+    const restarted = new Runtime(f.state, f.herdr, f.config);
+    restarted.api = f.runtime.api;
+    await restarted.reconcileTasks(Date.now() + 600_001);
+    assert.equal(f.state.all<Job>("jobs").length, 2);
+  } finally { f.close(); }
+});
+
+test("lifecycle recovery is bounded and respects waiting tasks and active jobs", async () => {
+  const f = fixture();
+  try {
+    const { job } = taskJob(f);
+    let status = "RUNNING";
+    f.runtime.api = async () => ({ data: { ...assignedTask, status } });
+    let now = Date.now() + 600_000;
+    await f.runtime.reconcileTasks(now);
+    assert.equal(f.state.all<Job>("jobs").length, 1, "queued work is not stranded");
+    f.runtime.nextJob("runner", 1);
+    f.runtime.completeJob(job.id, "Waiting");
+    status = "INPUT_REQUIRED";
+    await f.runtime.reconcileTasks(now);
+    assert.equal(f.state.all<Job>("jobs").length, 1);
+    status = "RUNNING";
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await f.runtime.reconcileTasks(now);
+      const next = f.runtime.nextJob("runner", 1)!;
+      f.runtime.completeJob(next.job.id, "Unable to resolve");
+      now += 600_000;
+    }
+    await f.runtime.reconcileTasks(now);
+    await f.runtime.reconcileTasks(now + 600_000);
+    assert.equal(f.state.all<Job>("jobs").length, 3);
+    assert.equal(f.state.all<Outbox>("outbox").filter(item => String(item.body.comment).includes("operational attention")).length, 1);
+  } finally { f.close(); }
+});
+
+test("pending instructions survive failed turns and completion requires a disposition", async () => {
+  const f = fixture();
+  try {
+    const { job } = taskJob(f);
+    f.state.put("taskInputs", "comment-1", { id: "comment-1", taskId: "task-1", jobId: job.id, text: "Please use the existing worker", receivedAt: Date.now() });
+    f.runtime.api = async () => ({ data: assignedTask });
+    f.runtime.nextJob("runner", 1);
+    await assert.rejects(f.runtime.control("task-report", { jobId: job.id, status: "COMPLETED", text: "done" }), /pending task inputs/);
+    f.runtime.completeJob(job.id, "Turn interrupted", "recovery_required");
+    const restarted = new Runtime(f.state, f.herdr, f.config);
+    restarted.api = f.runtime.api;
+    await restarted.reconcileTasks(Date.now() + 600_000);
+    const next = restarted.nextJob("runner", 1)!;
+    assert.equal((next.context as { taskInputs: unknown[] }).taskInputs.length, 1);
+    await assert.rejects(restarted.control("task-input", { jobId: next.job.id, operation: "ack", inputId: "other", outcome: "handled", evidence: "done" }), /does not belong/);
+    await restarted.control("task-input", { jobId: next.job.id, operation: "ack", inputId: "comment-1", outcome: "relayed", evidence: "w1:p9 acknowledged receipt marker comment-1" });
+    await restarted.control("task-report", { jobId: next.job.id, status: "COMPLETED", text: "Verified result" });
+    assert.equal((f.state.get<{ acknowledgement: { outcome: string } }>("taskInputs", "comment-1"))?.acknowledgement.outcome, "relayed");
+  } finally { f.close(); }
+});
+
+test("completion is rejected while a worker is still attached", async () => {
+  const f = fixture();
+  try {
+    const { job } = taskJob(f);
+    f.runtime.api = async () => ({ data: assignedTask });
+    f.runtime.nextJob("runner", 1);
+    await f.runtime.control("task-runtime", { jobId: job.id, operation: "attach", kind: "external", resourceId: "ci:123", role: "verification" });
+    await assert.rejects(f.runtime.control("task-report", { jobId: job.id, status: "COMPLETED", text: "done" }), /detach/);
+    await f.runtime.control("task-runtime", { jobId: job.id, operation: "detach", kind: "external", resourceId: "ci:123" });
+    await f.runtime.control("task-report", { jobId: job.id, status: "COMPLETED", text: "Verified CI result" });
+  } finally { f.close(); }
+});
+
+test("consolidation preserves workers and instructions and is idempotent", async () => {
+  const f = fixture();
+  try {
+    const { conversation } = taskJob(f);
+    const duplicate = taskJob(f, "duplicate");
+    f.state.put("taskRuntimes", "duplicate", { taskId: "duplicate", conversationId: duplicate.conversation.id, resources: [{ kind: "herdr", resourceId: "w1:p9", role: "implementation", status: "working", attachedAt: Date.now() }] });
+    f.state.put("taskInputs", "comment-1", { id: "comment-1", taskId: "duplicate", jobId: duplicate.job.id, text: "Deploy the existing work", receivedAt: Date.now() });
+    const chat = f.runtime.createConversation("alice", { sokosumi_organization_id: "org" });
+    const job = f.runtime.createResponse("alice", chat.id, "Consolidate the duplicate");
+    f.runtime.nextJob("runner", 1);
+    f.runtime.api = async path => ({ data: { ...assignedTask, id: path.endsWith("duplicate") ? "duplicate" : "task-1", projectId: "project" } });
+    const body = { jobId: job.id, taskId: "task-1", duplicateId: "duplicate", text: "Same deliverable" };
+    const first = await f.runtime.control("task-consolidate", body);
+    assert.deepEqual(await f.runtime.control("task-consolidate", body), first);
+    assert.equal(f.state.get<{taskId:string}>("taskInputs", "comment-1")?.taskId, "task-1");
+    assert.equal(f.state.get<{resources:unknown[]}>("taskRuntimes", "duplicate")?.resources.length, 0);
+    assert.equal(f.state.get<{resources:unknown[]}>("taskRuntimes", "task-1")?.resources.length, 1);
+    assert.equal(f.state.get("taskConversations", "task-1"), conversation.id);
+    assert.equal(f.state.get("taskRedirects", "duplicate"), "task-1");
+    assert.equal(f.state.all<Outbox>("outbox").length, 2);
+    assert.equal(f.calls.length, 0, "worker processes are untouched");
+    await assert.rejects(f.runtime.control("task-continue", { jobId: job.id, taskId: "duplicate", text: "more" }), /consolidated/);
+  } finally { f.close(); }
+});
+
+test("consolidation rejects unrelated ownership before changing local state", async () => {
+  const f = fixture();
+  try {
+    const c = f.runtime.createConversation("alice", { sokosumi_organization_id: "org" });
+    const job = f.runtime.createResponse("alice", c.id, "Consolidate");
+    f.runtime.nextJob("runner", 1);
+    f.runtime.api = async path => ({ data: { ...assignedTask, ownerId: path.endsWith("duplicate") ? "bob" : "alice" } });
+    await assert.rejects(f.runtime.control("task-consolidate", { jobId: job.id, taskId: "task-1", duplicateId: "duplicate", text: "same" }), /owner|workspace/i);
+    assert.equal(f.state.all("taskConsolidations").length, 0);
+    assert.equal(f.state.all("outbox").length, 0);
+  } finally { f.close(); }
+});
+
 test("an assigned existing task can be recovered into the local queue exactly once", async () => {
   const f = fixture();
   try {

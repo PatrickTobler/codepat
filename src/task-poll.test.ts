@@ -181,6 +181,14 @@ test("a user comment on a completed task wakes its existing conversation", async
   assert.equal(jobs[1].taskId, "task");
   assert.equal(jobs[1].conversationId, conversationId);
   assert.match(jobs[1].input, /Where is the GitHub PR\?/);
+  const receipt = f.state.get<{ jobId: string; text: string }>("taskInputs", "comment-1");
+  assert.equal(receipt?.jobId, jobs[1].id);
+  assert.equal(receipt?.text, "Where is the GitHub PR?");
+  f.replay();
+  const restarted = new Runtime(f.state, f.herdr, f.config);
+  await restarted.pollTasks();
+  assert.deepEqual(f.state.get("taskInputs", "comment-1"), receipt);
+  assert.equal(f.state.all<Job>("jobs").length, 2);
 });
 
 test("self-authored progress advances the cursor without an orchestration loop", async (t) => {
@@ -194,6 +202,18 @@ test("self-authored progress advances the cursor without an orchestration loop",
   assert.equal(f.state.get("meta", "taskCursor"), "self-1");
   assert.deepEqual(f.requestedCursors, [null, "self-1"]);
   assert.deepEqual(f.requestedTasks, []);
+});
+
+test("comments on a consolidated duplicate are queued on the original", async (t) => {
+  const f = await fixture(t);
+  f.addTask("original", "RUNNING");
+  f.addTask("duplicate", "CANCELED");
+  f.state.put("taskRedirects", "duplicate", "original");
+  f.events.push({ id: "followup", taskId: "duplicate", actor: { type: "user", id: "alice" }, comment: "Use this new requirement" });
+  await f.runtime.pollTasks();
+  assert.equal(f.runtime.pollError, undefined);
+  assert.equal(f.state.all<Job>("jobs")[0].taskId, "original");
+  assert.equal(f.state.get<{ taskId: string }>("taskInputs", "followup")?.taskId, "original");
 });
 
 test("current actor metadata prevents self-authored comments from looping", async (t) => {

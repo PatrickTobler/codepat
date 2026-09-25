@@ -15,6 +15,10 @@ task-create --distinct --project <uuid> --name <name> --description-file <path>
 task-recover <task-id> (owner/admin recovery; not available to a scoped turn)
 task-report <status> --file <comment.md>
 task-runtime list
+task-input list
+tasks --project <uuid>
+task-consolidate <original-task-id> --duplicate <task-id> --file <reason.md>
+task-input ack <input-id> --outcome <handled|relayed> --evidence <text>
 task-runtime attach --kind <herdr|external> --id <resource> --role <role>
 task-runtime detach --kind <herdr|external> --id <resource>
 task-project <task> --project <uuid> --owner-config <private-json>
@@ -51,6 +55,12 @@ switch (action) {
   case "task-continue":
     body = { jobId, taskId: args[0], text: readFileSync(option("--file"), "utf8") };
     break;
+  case "tasks":
+    body = { jobId, projectId: option("--project") };
+    break;
+  case "task-consolidate":
+    body = { jobId, taskId: args[0], duplicateId: option("--duplicate"), text: readFileSync(option("--file"), "utf8") };
+    break;
   case "task-upload":
     body = {
       jobId,
@@ -75,6 +85,9 @@ switch (action) {
       ...(args[0] === "list" ? {} : { kind: option("--kind"), resourceId: option("--id") }),
       ...(args[0] === "attach" ? { role: option("--role") } : {}),
     };
+    break;
+  case "task-input":
+    body = { jobId, operation: args[0], ...(args[0] === "ack" ? { inputId: args[1], outcome: option("--outcome"), evidence: option("--evidence") } : {}) };
     break;
   default:
     throw new Error(

@@ -19,6 +19,7 @@ export interface Job {
   recoveryNote?: string;
   reservationProtocol?: number;
   turnStarted?: boolean;
+  completedAt?: number;
 }
 export interface Conversation {
   id: string;

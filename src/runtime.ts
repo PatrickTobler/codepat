@@ -1,8 +1,9 @@
 import { apiRejection } from "./api-diagnostic.ts";
+import { hasLocalLinks, readableTaskText } from "./task-links.ts";
 import { MAX_PROGRESS, validateProgress, type Progress } from "./progress.ts";
 import { failureText } from "./recovery.ts";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, statfsSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -61,6 +62,9 @@ const SCOPED_ACTIONS = [
   "task-report",
   "task-runtime",
   "task-create",
+  "task-input",
+  "tasks",
+  "task-consolidate",
 ];
 
 interface TaskResource {
@@ -84,6 +88,25 @@ interface TaskRuntime {
 interface TaskContinuationReceipt {
   jobId: string;
   notificationId: string;
+}
+
+interface TaskInput {
+  id: string;
+  taskId: string;
+  jobId: string;
+  text: string;
+  receivedAt: number;
+  acknowledgement?: { outcome: "handled" | "relayed"; evidence: string; at: number };
+}
+
+interface TaskHealth {
+  taskId: string;
+  checkedAt: number;
+  issue?: string;
+  episode?: string;
+  attempts: number;
+  lastAttemptAt?: number;
+  alerted?: boolean;
 }
 
 const TASK_FILE_MAX_BYTES = 104_857_600;
@@ -111,7 +134,14 @@ export class Runtime implements ChatService {
   herdr: HerdrPort;
   config: RuntimeConfig;
   pollError?: string;
+  reconciliationError?: string;
   runnerAt = 0;
+  storageHealth(): { availableBytes: number; totalBytes: number; low: boolean } {
+    const info = statfsSync(this.config.dataDir);
+    const availableBytes = info.bavail * info.bsize;
+    const totalBytes = info.blocks * info.bsize;
+    return { availableBytes, totalBytes, low: availableBytes < Math.max(2 * 1024 ** 3, totalBytes * 0.1) };
+  }
   constructor(state: State, herdr: HerdrPort, config: RuntimeConfig) {
     this.state = state;
     this.herdr = herdr;
@@ -291,7 +321,9 @@ export class Runtime implements ChatService {
       jobConfig,
       threadId: this.state.get<string>("threads", job.conversationId),
       context: {
+        storage: this.storageHealth(),
         recoveryNote: job.recoveryNote,
+        taskInputs: job.taskId ? this.state.all<TaskInput>("taskInputs").filter(input => input.taskId === job.taskId && !input.acknowledgement) : [],
         taskPolling: Boolean(this.config.apiKey && this.config.coworkerId),
         deliveryFailures: this.state
           .all<Outbox>("outbox")
@@ -342,9 +374,11 @@ export class Runtime implements ChatService {
     if (job.status !== "in_progress") throw new Error("Job is not in progress");
     this.state.transaction(() => {
       if (error && !text.trim()) text = failureText(error);
+      if (job.kind === "task") text = readableTaskText(text);
       job.text = text;
       job.status = error ? "failed" : "completed";
       job.error = error;
+      job.completedAt = Date.now();
       this.state.put("jobs", id, job);
       // A task turn's final answer belongs on the Sokosumi task; an explicit
       // task-report in the same turn already delivered it.
@@ -564,6 +598,8 @@ export class Runtime implements ChatService {
   async continueTask(job: Job, body: Record<string, unknown>): Promise<Record<string, unknown>> {
     if (job.kind !== "chat") throw new Error("Existing tasks can only be continued from a chat request");
     const taskId = textField(body, "taskId");
+    const canonicalId = this.state.get<string>("taskRedirects", taskId);
+    if (canonicalId) throw new Error(`Task was consolidated; continue task ${canonicalId} instead`);
     const content = textField(body, "text");
     if (content.length > 20_000) throw new Error("Task continuation is too long");
     const receiptId = createHash("sha256")
@@ -624,11 +660,73 @@ export class Runtime implements ChatService {
         jobId: taskJob.id,
         notificationId,
       });
+      this.state.put<TaskInput>("taskInputs", `chat:${receiptId}`, {
+        id: `chat:${receiptId}`, taskId, jobId: taskJob.id, text: content, receivedAt: Date.now(),
+      });
       return {
         task,
         job: taskJob,
         ...this.taskReportResult(notificationId),
       };
+    });
+  }
+  async consolidateTask(job: Job, body: Record<string, unknown>): Promise<unknown> {
+    if (job.kind !== "chat") throw new Error("Task consolidation requires a chat request");
+    const taskId = textField(body, "taskId");
+    const duplicateId = textField(body, "duplicateId");
+    const reason = textField(body, "text");
+    if (taskId === duplicateId || reason.length > 2000) throw new Error("Invalid consolidation request");
+    const conversation = this.taskConversation(job);
+    const headers = this.contextHeaders(conversation);
+    const tasks = await Promise.all([taskId, duplicateId].map(async id => {
+      const task = record((await this.api(`/tasks/${encodeURIComponent(id)}`, "GET", undefined, headers)).data);
+      this.assertTaskOwner(task, conversation);
+      if ((task.assigneeId ?? task.coworkerId) !== this.config.coworkerId) throw new Error("Task is no longer assigned to CodePat");
+      return task;
+    }));
+    if (tasks[0].projectId !== tasks[1].projectId) throw new Error("Tasks must belong to the same project");
+    const key = `${taskId}:${duplicateId}`;
+    const previous = this.state.get("taskConsolidations", key);
+    if (previous) return previous;
+    if (this.state.get("taskRedirects", taskId) || this.state.get("taskRedirects", duplicateId))
+      throw new Error("Task already consolidated; use its canonical task");
+    for (const [task, target] of [[tasks[0], "RUNNING"], [tasks[1], "CANCELED"]] as const) {
+      if (Array.isArray(task.selectableStatuses) && task.status !== target && !task.selectableStatuses.includes(target))
+        throw new Error(`Task cannot transition to ${target}`);
+    }
+    return this.state.transaction(() => {
+      const raced = this.state.get("taskConsolidations", key);
+      if (raced) return raced;
+      const jobs = this.state.all<Job>("jobs");
+      if (jobs.some(item => item.taskId === duplicateId && item.status === "in_progress"))
+        throw new Error("Duplicate task has an active coordinator turn; wait for it to finish before consolidation");
+      let conversationId = this.state.get<string>("taskConversations", taskId);
+      if (!conversationId) {
+        conversationId = this.createConversation(conversation.owner, { taskId, sokosumi_organization_id: textField(conversation.metadata, "sokosumi_organization_id") }).id;
+        this.state.put("taskConversations", taskId, conversationId);
+      }
+      const canonical = this.state.get<TaskRuntime>("taskRuntimes", taskId) ?? { taskId, conversationId, resources: [] };
+      const duplicate = this.state.get<TaskRuntime>("taskRuntimes", duplicateId);
+      for (const resource of duplicate?.resources ?? []) {
+        if (!canonical.resources.some(item => item.kind === resource.kind && item.resourceId === resource.resourceId)) canonical.resources.push(resource);
+      }
+      this.state.put("taskRuntimes", taskId, canonical);
+      if (duplicate) this.state.put("taskRuntimes", duplicateId, { ...duplicate, resources: [] });
+      for (const input of this.state.all<TaskInput>("taskInputs").filter(input => input.taskId === duplicateId && !input.acknowledgement))
+        this.state.put("taskInputs", input.id, { ...input, taskId });
+      const queued = jobs.filter(item => item.taskId === duplicateId && item.status === "queued");
+      for (const item of queued) this.state.put("jobs", item.id, { ...item, status: "completed", completedAt: Date.now(), text: `Transferred to task ${taskId}` });
+      const continuation = this.state.enqueue({ conversationId, kind: "task", taskId,
+        input: `Task consolidation: ${duplicateId} is now tracked under ${taskId}. ${reason}\nInspect transferred resources and preserved work; do not start duplicate workers or repeat live actions. Original: ${JSON.stringify(tasks[0])}\nDuplicate: ${JSON.stringify(tasks[1])}\nTransferred queued instructions: ${JSON.stringify(queued.map(item => item.input))}`,
+      }, `task-consolidation:${key}`);
+      const notifications = [
+        this.reportTask(taskId, `Continuing here with resources and pending instructions from duplicate task ${duplicateId}. ${reason}`, tasks[0].status === "RUNNING" ? undefined : "RUNNING", conversationId),
+        this.reportTask(duplicateId, `Duplicate consolidated into task ${taskId}. Work is preserved and tracked there. ${reason}`, tasks[1].status === "CANCELED" ? undefined : "CANCELED", this.state.get<string>("taskConversations", duplicateId) ?? conversationId),
+      ];
+      const result = { taskId, duplicateId, jobId: continuation.id, notificationIds: notifications, delivery: "pending" };
+      this.state.put("taskConsolidations", key, result);
+      this.state.put("taskRedirects", duplicateId, taskId);
+      return result;
     });
   }
   async pollTasks(): Promise<void> {
@@ -643,7 +741,8 @@ export class Runtime implements ChatService {
       for (const raw of response.data) {
         const event = record(raw);
         const id = textField(event, "id");
-        const taskId = textField(event, "taskId");
+        const sourceTaskId = textField(event, "taskId");
+        const taskId = this.state.get<string>("taskRedirects", sourceTaskId) ?? sourceTaskId;
         if (!this.state.get<boolean>("taskEvents", id)) {
           // Self-authored progress advances the cursor without an orchestration loop.
           const actor = event.actor && typeof event.actor === "object" && !Array.isArray(event.actor)
@@ -668,21 +767,32 @@ export class Runtime implements ChatService {
               task.assigneeId === this.config.coworkerId &&
               (hasComment || !INERT_TASK_STATUSES.includes(String(task.status)))
             ) {
-              const owner = textField(task, typeof task.ownerId === "string" ? "ownerId" : "userId");
-              let conversationId = this.state.get<string>("taskConversations", taskId);
-              if (!conversationId) {
-                conversationId = this.createConversation(owner, { taskId, ...(typeof task.organizationId === "string" ? { sokosumi_organization_id: task.organizationId } : {}) }).id;
-                this.state.put("taskConversations", taskId, conversationId);
-              }
-              this.state.enqueue(
-                {
-                  conversationId,
-                  kind: "task",
-                  taskId,
-                  input: `Sokosumi task event. Task: ${JSON.stringify(task)}\nEvent: ${JSON.stringify(event)}`,
-                },
-                `event:${id}`,
-              );
+              const eventTask = task;
+              this.state.transaction(() => {
+                const owner = textField(eventTask, typeof eventTask.ownerId === "string" ? "ownerId" : "userId");
+                let conversationId = this.state.get<string>("taskConversations", taskId);
+                if (!conversationId) {
+                  conversationId = this.createConversation(owner, { taskId, ...(typeof eventTask.organizationId === "string" ? { sokosumi_organization_id: eventTask.organizationId } : {}) }).id;
+                  this.state.put("taskConversations", taskId, conversationId);
+                }
+                const existing = this.state.get<Conversation>("conversations", conversationId);
+                if (!existing || existing.owner !== owner || existing.metadata.sokosumi_organization_id !== eventTask.organizationId)
+                  throw new Error("Task ownership or organization changed");
+                const delivery = this.state.enqueue(
+                  {
+                    conversationId,
+                    kind: "task",
+                    taskId,
+                    input: `Sokosumi task event. Task: ${JSON.stringify(task)}\nEvent: ${JSON.stringify(event)}`,
+                  },
+                  `event:${id}`,
+                );
+                if (hasComment && !this.state.get("taskInputs", id)) this.state.put<TaskInput>("taskInputs", id, {
+                  id, taskId, jobId: delivery.id, text: String(event.comment), receivedAt: Date.now(),
+                });
+                this.state.put("taskEvents", id, true);
+                this.state.put("meta", "taskCursor", id);
+              });
             }
           }
           this.state.put("taskEvents", id, true);
@@ -713,7 +823,8 @@ export class Runtime implements ChatService {
           resource.cycle = (resource.cycle ?? 0) + 1;
           resource.lastWake = undefined;
         }
-        if (wasWorking && settled && resource.lastWake !== fingerprint)
+        const startupStalled = !wasWorking && (status !== "idle" || Date.now() - resource.attachedAt >= 60_000);
+        if ((wasWorking || startupStalled) && settled && resource.lastWake !== fingerprint)
           transitions.push(`${resource.resourceId} is ${status} after work cycle ${resource.cycle ?? 1}`);
         resource.provider = agent?.agent ?? resource.provider;
         resource.seenWorking = wasWorking || status === "working";
@@ -733,6 +844,57 @@ export class Runtime implements ChatService {
       }
       this.state.put("taskRuntimes", runtime.taskId, runtime);
     }
+  }
+  async reconcileTasks(now = Date.now()): Promise<void> {
+    if (!this.config.apiKey || !this.config.coworkerId) return;
+    const errors: string[] = [];
+    for (const conversation of this.state.all<Conversation>("conversations")) {
+      const taskId = conversation.metadata.taskId;
+      if (!taskId || this.state.get<string>("taskConversations", taskId) !== conversation.id) continue;
+      if (this.state.get("taskRedirects", taskId)) continue;
+      try {
+        const task = record((await this.api(`/tasks/${encodeURIComponent(taskId)}`, "GET", undefined, this.contextHeaders(conversation))).data);
+        this.assertTaskOwner(task, conversation);
+        const jobs = this.state.all<Job>("jobs").filter(job => job.taskId === taskId);
+        const pendingInputs = this.state.all<TaskInput>("taskInputs").filter(input => input.taskId === taskId && !input.acknowledgement);
+        const resources = this.state.get<TaskRuntime>("taskRuntimes", taskId)?.resources ?? [];
+        const active = jobs.some(job => ["queued", "in_progress"].includes(job.status));
+        const last = jobs.at(-1);
+        const recent = last && now - (last.completedAt ?? last.submittedAt ?? last.createdAt) < 300_000;
+        const supported = resources.some(resource => resource.kind === "external" || resource.status === "working");
+        let issue: string | undefined;
+        if ((task.assigneeId ?? task.coworkerId) === this.config.coworkerId && !active && !recent) {
+          if (pendingInputs.length) issue = "Task instructions have no acknowledged disposition";
+          else if (task.status === "RUNNING" && !supported) issue = "Running task has no working resource or queued continuation";
+        }
+        const previous = this.state.get<TaskHealth>("taskHealth", taskId);
+        const episode = pendingInputs.length ? `input:${pendingInputs[0].id}` : jobs.filter(job => !job.input.startsWith("Task lifecycle check:")).at(-1)?.id ?? "initial";
+        const health: TaskHealth = {
+          taskId, checkedAt: now, issue, episode,
+          attempts: previous?.episode === episode ? previous.attempts : 0,
+          lastAttemptAt: previous?.episode === episode ? previous.lastAttemptAt : undefined,
+          alerted: previous?.episode === episode ? previous.alerted : false,
+        };
+        if (issue && now - (health.lastAttemptAt ?? 0) >= 300_000) {
+          this.state.transaction(() => {
+            if (health.attempts < 2) {
+              const attempt = health.attempts + 1;
+              this.state.enqueue({
+                conversationId: conversation.id, taskId, kind: "task",
+                input: `Task lifecycle check: ${issue}. Inspect preserved output, checkout, task events and attached resources before taking action. Reconcile uncertain effects before retrying. Resolve startup blockers within existing authorization, relay pending instructions with task-input acknowledgement, or report the precise waiting state. Never infer completion from idle. Task: ${JSON.stringify(task)}`,
+              }, `task-health:${taskId}:${episode}:${attempt}`);
+              health.attempts = attempt;
+              health.lastAttemptAt = now;
+            } else if (!health.alerted) {
+              this.reportTask(taskId, `CodePat could not resolve this lifecycle issue after two inspection turns: ${issue}. Preserved work remains available; this task needs operational attention.`, undefined, conversation.id);
+              health.alerted = true;
+            }
+            this.state.put("taskHealth", taskId, health);
+          });
+        } else this.state.put("taskHealth", taskId, health);
+      } catch (error) { errors.push(`${taskId}: ${String(error)}`); }
+    }
+    this.reconciliationError = errors.length ? errors.join("; ") : undefined;
   }
   contextHeaders(conversation: Conversation): Record<string, string> {
     return {
@@ -892,7 +1054,11 @@ export class Runtime implements ChatService {
     if (action === "status")
       return {
         runnerAt: this.runnerAt,
+        storage: this.storageHealth(),
         pollError: this.pollError,
+        reconciliationError: this.reconciliationError,
+        taskHealth: this.state.all<TaskHealth>("taskHealth").filter(task => task.issue),
+        unacknowledgedInputs: this.state.all<TaskInput>("taskInputs").filter(input => !input.acknowledgement).map(input => ({ id: input.id, taskId: input.taskId, receivedAt: input.receivedAt })),
         taskPolling: Boolean(this.config.apiKey && this.config.coworkerId),
         uncertainNotifications: this.state
           .all<Outbox>("outbox")
@@ -944,6 +1110,12 @@ export class Runtime implements ChatService {
     }
     if (action === "projects")
       return pages(this.api.bind(this), "/projects", this.contextHeaders(this.taskConversation(job)));
+    if (action === "tasks") {
+      const conversation = this.taskConversation(job);
+      const tasks = await pages(this.api.bind(this), `/tasks?scope=owned&projectId=${encodeURIComponent(textField(body, "projectId"))}`, this.contextHeaders(conversation));
+      return tasks.filter(task => (task.ownerId ?? task.userId) === conversation.owner && task.organizationId === conversation.metadata.sokosumi_organization_id)
+        .map(task => ({ id: task.id, name: task.name, status: task.status, assigneeId: task.assigneeId }));
+    }
     if (action === "project")
       return inspectProject(this.api.bind(this), textField(body, "projectId"), this.contextHeaders(this.taskConversation(job)));
     if (action === "repositories")
@@ -970,6 +1142,23 @@ export class Runtime implements ChatService {
       return task;
     }
     if (action === "task-continue") return this.continueTask(job, body);
+    if (action === "task-consolidate") return this.consolidateTask(job, body);
+    if (action === "task-input") {
+      if (!job.taskId) throw new Error("No task in this request");
+      const inputs = this.state.all<TaskInput>("taskInputs").filter(input => input.taskId === job.taskId);
+      if (body.operation === "list") return inputs;
+      if (body.operation !== "ack") throw new Error("Invalid task input operation");
+      const input = inputs.find(input => input.id === body.inputId);
+      if (!input) throw new Error("Input does not belong to this task");
+      if (!["handled", "relayed"].includes(String(body.outcome))) throw new Error("Invalid acknowledgement outcome");
+      const evidence = textField(body, "evidence");
+      if (evidence.length > 2000) throw new Error("Acknowledgement is too long");
+      if (!input.acknowledgement) {
+        input.acknowledgement = { outcome: body.outcome as "handled" | "relayed", evidence, at: Date.now() };
+        this.state.put("taskInputs", input.id, input);
+      }
+      return input;
+    }
     if (action === "task-upload")
       return this.uploadTaskFile(
         job,
@@ -993,6 +1182,8 @@ export class Runtime implements ChatService {
         runtime.resources = runtime.resources.filter(resource => !(resource.kind === kind && resource.resourceId === resourceId));
       } else if (operation === "attach") {
         const role = textField(body, "role");
+        if (this.state.all<TaskRuntime>("taskRuntimes").some(other => other.taskId !== job.taskId && other.resources.some(resource => resource.kind === kind && resource.resourceId === resourceId)))
+          throw new Error("Resource belongs to another task; consolidate the tasks or detach it there first");
         if (runtime.resources.some(resource => resource.kind === kind && resource.resourceId === resourceId))
           throw new Error("Task runtime resource is already attached");
         let agent: Awaited<ReturnType<HerdrPort["agents"]>>[number] | undefined;
@@ -1018,12 +1209,17 @@ export class Runtime implements ChatService {
     if (action === "task-report") {
       if (!job.taskId) throw new Error("No task in this request");
       const content = textField(body, "text");
+      if (hasLocalLinks(content)) throw new Error("Upload local evidence with task-upload and use its fileUrl before reporting links");
       const status = typeof body.status === "string" ? body.status : undefined;
       const receipt = createHash("sha256").update(JSON.stringify([job.id, job.conversationId, job.taskId, status ?? null, content])).digest("hex");
       const previous = this.state.get<{ notificationId: string }>("taskReportReceipts", receipt);
       if (previous) return this.taskReportResult(previous.notificationId);
       const task = await this.assertAssigned(job.taskId, true);
       this.assertTaskOwner(task, this.taskConversation(job));
+      if (status === "COMPLETED" && this.state.get<TaskRuntime>("taskRuntimes", job.taskId)?.resources.length)
+        throw new Error("Review and retire attached task resources, then detach them before reporting COMPLETED");
+      if (status === "COMPLETED" && this.state.all<TaskInput>("taskInputs").some(input => input.taskId === job.taskId && !input.acknowledgement))
+        throw new Error("Acknowledge the disposition of pending task inputs before reporting COMPLETED");
       if (
         status &&
         ![

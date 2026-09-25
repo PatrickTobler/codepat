@@ -187,6 +187,11 @@ function loop(ms: number, action: () => Promise<void>): void {
 loop(5000, () => runtime.pollTasks());
 loop(5000, () => runtime.pollTaskRuntimes());
 loop(5000, () => runtime.flushOutbox());
+loop(60_000, () => runtime.reconcileTasks());
+loop(300_000, async () => {
+  const storage = runtime.storageHealth();
+  if (storage.low) console.error(`Low disk space: ${storage.availableBytes} bytes available in CodePat data filesystem`);
+});
 loop(10_000, () => ensureRunner());
 startedAt = 0;
 await ensureRunner();

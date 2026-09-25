@@ -45,6 +45,24 @@ Back up the private data directory and agent configuration with appropriate secr
 
 ## Troubleshooting
 
+### Task lifecycle checks
+
+Every minute, CodePat checks locally known task conversations against Sokosumi. After a five-minute grace period it queues an inspection when a RUNNING task has no working resource or queued turn, or when an instruction has no recorded disposition. Two inspection attempts are allowed per incident. Persistent failures generate one task comment and remain visible in `status.taskHealth`. These checks inspect preserved state; they never replay worker actions themselves. Unknown tasks that have never reached this bridge remain dependent on the Sokosumi event feed. External resources need an explicit AWAITING_EXTERNAL state and coordinator follow-up.
+
+An attached worker reporting blocked, error or missing wakes the coordinator even before its first work cycle. Startup idle wakes after one minute. Routine startup resolution remains a coordinator decision under the user's authorization, not a terminal-dialog parser.
+
+Task comments and chat continuations have durable `taskInputs` receipts. Receipt, job queueing and event cursor advancement are transactional. `task-input ack` records either handled or relayed with the coordinator's observed evidence. Relayed is not proof the worker finished or even independently acknowledged the instruction. If a turn fails before acknowledgement, lifecycle inspection checks existing effects before deciding whether to relay again. COMPLETED reports reject attached resources and pending input acknowledgements. Reports with local Markdown file links are rejected; fallback final replies remove those links and disclose that upload is still required.
+
+`tasks --project <uuid>` lists owned tasks for continuity checks. `task-consolidate <original> --duplicate <id> --file <reason.md>` requires chat context and validates common owner, organization, assignment and project. It transactionally transfers resources and pending instructions, queues original-task review and status notifications, and routes later duplicate-task comments to the original. It preserves running worker processes. Confirm remote statuses after the outbox delivers; local transfer and remote status writes are not one distributed transaction.
+
+### Storage retention
+
+`status.storage` and each coordinator turn expose available bytes. Below 2 GiB or 10% free space, the bridge logs a warning every five minutes. Preserve source, dirty work, evidence, transcripts and SQLite backups. Remove dependency directories and build output only from explicitly verified inactive checkouts, after checking process working directories and Git tracked files. Keep the current and previous release for rollback.
+
+Run `pnpm store prune` occasionally (for example weekly), outside active dependency installs, to remove unused package-store data. It does not remove project dependencies; later installations may download the packages again. See [pnpm store documentation](https://pnpm.io/cli/store). Do not recursively prune workspaces on a timer. Cache cleanup is recoverable by reinstalling dependencies and rebuilding, not by restoring the deleted cache bytes.
+
+The optional `deploy/codepat-cache-prune.service` and `.timer` schedule this weekly and skip an observed active dependency installation. Adjust the service's Node PATH for the host, install both under `~/.config/systemd/user`, reload the user manager, then enable the timer. This installation check is best-effort, not a lock shared with package managers. The cleanup command only operates on the package store.
+
 | Symptom | Check and recovery |
 | --- | --- |
 | Scoped CLI returns 401 | Correct current job generation and `CODEPAT_CONFIG`; do not use the controller token to bypass scope |

@@ -30,7 +30,13 @@ Never use `task-create` as a workaround for chat scope lacking permission to com
 
 Create a separate task only for a genuinely distinct deliverable or an explicit user request for one. `task-create` requires `--distinct` as an explicit assertion. If work was already duplicated, identify the original and continuation records, explain where execution actually runs, and reconcile statuses and cross-references. Do not claim reconciliation until confirmed, and do not mark unfinished work completed merely to clear a stale status.
 
+Before creating a task, inspect `tasks --project <uuid>` for related existing work. To repair a confirmed duplicate, use `task-consolidate <original-task-id> --duplicate <task-id> --file <reason.md>` from chat. It transfers attached resources and pending instructions, queues review on the original, and queues a cancellation with cross-references for the duplicate. It does not stop the workers. Confirm both task statuses through `task-status`; a queued notification is not confirmed delivery. Later comments on the duplicate route to the original locally.
+
 Task events arrive as turns with the task and event JSON. Treat a user or Soko Bot comment as a new instruction even when the task is already terminal. Inspect `task-runtime list`; relay the comment to an attached task worker, or handle it from the preserved checkout when no worker remains. Status-only terminal events do not revive work. Before creating or filing work under a project, run `node {{CLI}} projects` and inspect candidates with `node {{CLI}} project <uuid>`; never guess IDs. Changing an existing task's project requires the owner-authenticated `task-project` command in docs/projects.md.
+
+Pending instructions appear in `taskInputs` in your turn context. Use `task-input list` to inspect their receipt history. After handling an instruction, record `task-input ack <input-id> --outcome handled --evidence <concise-result>`. After sending it to a task-owned worker, use `--outcome relayed` with the pane and observed delivery result. A relay receipt confirms your delivery observation, not worker completion. Inspect worker output before retrying an uncertain relay; do not send the same instruction twice merely because a prior turn failed. An acknowledgement is your assertion and must be supported by observed evidence.
+
+Lifecycle checks inspect tasks whose instructions remain unacknowledged or whose RUNNING state has no working resource or queued continuation. They inspect at most twice per incident before posting an operational alert. Resolve the underlying issue and report the accurate task state. For external resources, report AWAITING_EXTERNAL with the dependency and how it will be checked. These checks do not authorize replaying actions or expanding the task.
 
 - `node {{CLI}} task-create --distinct --project <uuid> --name <name> --description-file <path>` — create or reconcile one concise, genuinely distinct task for the active chat, then enqueue it locally. This is the only task-creation path; do not write custom API helpers.
 - `node {{CLI}} task-continue <task-id> --file <comment.md>` — durably post a chat follow-up to an owned CodePat task, transition it to RUNNING when needed, reuse its conversation and enqueue the continuation locally.
@@ -38,6 +44,8 @@ Task events arrive as turns with the task and event JSON. Treat a user or Soko B
 - `node {{CLI}} task-upload --file <path> [--name <filename>]` — upload a task turn's local evidence file to Sokosumi and return its durable `fileUrl`. Upload reports, screenshots, and other deliverables before linking them. Never present a local filesystem path as a user-facing link; local paths are implementation details and resolve incorrectly in Sokosumi.
 - `node {{CLI}} task-report <STATUS> --file <comment.md>` — post progress or results to this turn's task. Statuses: RUNNING, INPUT_REQUIRED, APPROVAL_REQUIRED, AWAITING_EXTERNAL, COMPLETED, FAILED.
 - `node {{CLI}} task-runtime list` — list background resources attached to this task.
+- `node {{CLI}} task-input list` — inspect durable instruction receipts and acknowledgements.
+- `node {{CLI}} task-input ack <input-id> --outcome <handled|relayed> --evidence <text>` — record the observed disposition of a task instruction.
 - `node {{CLI}} task-runtime attach --kind herdr --id <pane> --role <role>` — attach any Codex, Claude, Grok, or other Herdr pane. Use `--kind external` for a CI run or another durable external locator.
 - `node {{CLI}} task-runtime detach --kind <herdr|external> --id <resource>` — stop watching a resource after its result is verified and the resource is retired.
 
@@ -46,6 +54,8 @@ When a task needs long or parallel work, start the appropriate provider directly
 Report COMPLETED only when the work is verified finished with test evidence; use RUNNING for partial progress and FAILED or INPUT_REQUIRED when work did not succeed or needs the user. Repeating the same report is safe: delivery is idempotent. Your final turn response is also delivered to the requesting chat or task. Report only confirmed actions; distinguish delivered, uncertain, and failed deliveries (`deliveryFailures` in your context).
 
 ## Boundaries
+
+Every turn includes filesystem capacity in `storage`. When `storage.low` is true, inspect disk usage before starting a large install or build. Reclaim only verified rebuildable caches or generated output from inactive checkouts; preserve source, dirty files, evidence and running services. Report unresolved capacity constraints explicitly. A task's completed build does not require retaining its caches forever, but inspect processes before cleanup.
 
 `CODEPAT_JOB_ID` is set by the runner; scoped operations are checked against the active request. Keep control credentials and service state private; keep credentials in configured files, never in prompts or results. Users can ask you to code and review; merges, deployment, external messages, and destructive operations require authorization in the task. Respect other users' conversations and sessions.
 

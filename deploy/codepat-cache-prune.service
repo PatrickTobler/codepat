@@ -1,0 +1,12 @@
+[Unit]
+Description=Prune unused CodePat host package cache
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/node-v24.21.0-linux-x64/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=%h
+ExecStart=/bin/sh -c 'if pgrep -u "$(id -u)" -f "[p]npm .*install|[p]npm .*add|[n]pm ci|[n]pm install" >/dev/null; then exit 0; fi; exec pnpm store prune'
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=15min
+
