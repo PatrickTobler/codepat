@@ -632,6 +632,44 @@ test("a comment-awakened terminal task can report RUNNING", async () => {
   }
 });
 
+test("task upload accepts Vercel control-plane signed URLs without forwarding API credentials", async (t) => {
+  const f = fixture();
+  try {
+    const { job } = taskJob(f);
+    const path = join(f.dir, "report.txt");
+    writeFileSync(path, "acceptance report");
+    let uploaded = false;
+    const file = { id: "file-1", name: "report.txt", size: 17, fileUrl: "https://example.public.blob.vercel-storage.com/report.txt" };
+    f.runtime.api = async (path, method = "GET") => {
+      if (method === "POST") return { data: { uploadUrl: "https://vercel.com/api/blob/?vercel-blob-signature=test", headers: { "Content-Type": "text/plain" } } };
+      return { data: path.endsWith("/files") ? (uploaded ? [file] : []) : assignedTask };
+    };
+    t.mock.method(globalThis, "fetch", async (url: string | URL, init: RequestInit) => {
+      assert.equal(new URL(String(url)).origin, "https://vercel.com");
+      assert.equal(init.redirect, "error");
+      assert.deepEqual(init.headers, { "Content-Type": "text/plain" });
+      uploaded = true;
+      return new Response(JSON.stringify({ url: file.fileUrl }), { status: 200 });
+    });
+    assert.deepEqual(await f.runtime.uploadTaskFile(job, path), file);
+    assert.equal(uploaded, true);
+  } finally { f.close(); }
+});
+
+test("task upload rejects lookalikes and unrelated Vercel paths before sending bytes", async (t) => {
+  const f = fixture();
+  try {
+    const { job } = taskJob(f);
+    const path = join(f.dir, "report.txt");
+    writeFileSync(path, "test");
+    t.mock.method(globalThis, "fetch", async () => { assert.fail("No bytes may be sent"); });
+    for (const uploadUrl of ["https://vercel.com.evil.example/api/blob", "https://vercel.com/api/other", "http://vercel.com/api/blob", "https://user:password@vercel.com/api/blob"]) {
+      f.runtime.api = async (path, method = "GET") => ({ data: method === "POST" ? { uploadUrl, headers: { "Content-Type": "text/plain" } } : path.endsWith("/files") ? [] : assignedTask });
+      await assert.rejects(f.runtime.uploadTaskFile(job, path), /unsupported task upload destination; no file bytes were sent/);
+    }
+  } finally { f.close(); }
+});
+
 test("task upload returns a registered Sokosumi file URL without forwarding credentials", async (t) => {
   const f = fixture();
   const bytes = "verification evidence\n";

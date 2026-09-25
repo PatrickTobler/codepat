@@ -1,5 +1,6 @@
 import { apiRejection } from "./api-diagnostic.ts";
 import { hasLocalLinks, readableTaskText } from "./task-links.ts";
+import { ControlConflict } from "./control-error.ts";
 import { MAX_PROGRESS, validateProgress, type Progress } from "./progress.ts";
 import { failureText } from "./recovery.ts";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -489,17 +490,20 @@ export class Runtime implements ChatService {
     const uploadUrl = new URL(textField(session, "uploadUrl"));
     const apiUrl = new URL(this.config.apiUrl);
     const productionBlob = uploadUrl.protocol === "https:" &&
-      (uploadUrl.hostname === "blob.vercel-storage.com" || uploadUrl.hostname.endsWith(".blob.vercel-storage.com"));
+      !uploadUrl.username && !uploadUrl.password && !uploadUrl.port &&
+      (uploadUrl.hostname === "blob.vercel-storage.com" || uploadUrl.hostname.endsWith(".blob.vercel-storage.com") ||
+        (uploadUrl.hostname === "vercel.com" && /^\/api\/blob(?:\/|$)/.test(uploadUrl.pathname)));
     const localTestUpload = ["127.0.0.1", "localhost", "::1"].includes(apiUrl.hostname) && uploadUrl.origin === apiUrl.origin;
-    if (!productionBlob && !localTestUpload) throw new Error("Sokosumi returned an untrusted task upload URL");
+    if (!productionBlob && !localTestUpload) throw new ControlConflict("Sokosumi returned an unsupported task upload destination; no file bytes were sent");
     const uploadHeaders = record(session.headers);
     const response = await fetch(uploadUrl, {
       method: "PUT",
       headers: { "Content-Type": textField(uploadHeaders, "Content-Type") },
       body: await readFile(sourcePath),
       signal: AbortSignal.timeout(120_000),
+      redirect: "error",
     });
-    if (!response.ok) throw new Error(`Task file upload failed (${response.status})`);
+    if (!response.ok) throw new ControlConflict(`Task file upload returned HTTP ${response.status}; inspect task files before retrying`);
     let blobUrl: string | undefined;
     try {
       const uploaded = record(await response.json());
@@ -1186,7 +1190,7 @@ export class Runtime implements ChatService {
       } else if (operation === "attach") {
         const role = textField(body, "role");
         if (this.state.all<TaskRuntime>("taskRuntimes").some(other => other.taskId !== job.taskId && other.resources.some(resource => resource.kind === kind && resource.resourceId === resourceId)))
-          throw new Error("Resource belongs to another task; consolidate the tasks or detach it there first");
+        throw new ControlConflict("Resource belongs to another task; consolidate the tasks or detach it there first");
         if (runtime.resources.some(resource => resource.kind === kind && resource.resourceId === resourceId))
           throw new Error("Task runtime resource is already attached");
         let agent: Awaited<ReturnType<HerdrPort["agents"]>>[number] | undefined;
@@ -1212,7 +1216,7 @@ export class Runtime implements ChatService {
     if (action === "task-report") {
       if (!job.taskId) throw new Error("No task in this request");
       const content = textField(body, "text");
-      if (hasLocalLinks(content)) throw new Error("Upload local evidence with task-upload and use its fileUrl before reporting links");
+      if (hasLocalLinks(content)) throw new ControlConflict("Upload local evidence with task-upload and use its fileUrl before reporting links");
       const status = typeof body.status === "string" ? body.status : undefined;
       const receipt = createHash("sha256").update(JSON.stringify([job.id, job.conversationId, job.taskId, status ?? null, content])).digest("hex");
       const previous = this.state.get<{ notificationId: string }>("taskReportReceipts", receipt);
@@ -1220,9 +1224,9 @@ export class Runtime implements ChatService {
       const task = await this.assertAssigned(job.taskId, true);
       this.assertTaskOwner(task, this.taskConversation(job));
       if (status === "COMPLETED" && this.state.get<TaskRuntime>("taskRuntimes", job.taskId)?.resources.length)
-        throw new Error("Review and retire attached task resources, then detach them before reporting COMPLETED");
+        throw new ControlConflict("Review and retire attached task resources, then detach them before reporting COMPLETED");
       if (status === "COMPLETED" && this.state.all<TaskInput>("taskInputs").some(input => input.taskId === job.taskId && !input.acknowledgement))
-        throw new Error("Acknowledge the disposition of pending task inputs before reporting COMPLETED");
+        throw new ControlConflict("Acknowledge the disposition of pending task inputs before reporting COMPLETED");
       if (
         status &&
         ![
