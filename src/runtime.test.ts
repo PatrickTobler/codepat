@@ -168,7 +168,7 @@ test("scoped turn credentials authorize only the small coordinator surface", () 
     const job = f.runtime.createResponse("alice", c.id, "work");
     const next = f.runtime.nextJob("runner", 1)!;
     const token = f.token(next.jobConfig);
-    for (const action of ["instances", "repositories", "projects", "project", "task-create", "task-status", "task-upload", "task-report", "task-runtime", "progress"])
+    for (const action of ["instances", "repositories", "projects", "project", "task-create", "task-continue", "task-status", "task-upload", "task-report", "task-runtime", "progress"])
       assert.equal(f.runtime.authorizeControl(token, action, { jobId: job.id }), true, action);
     for (const action of ["start", "workers", "send", "resume", "read", "stop", "next", "reply", "begin-turn", "status", "recover-chat"])
       assert.equal(f.runtime.authorizeControl(token, action, { jobId: job.id }), false, action);
@@ -290,13 +290,76 @@ test("chat task creation reconciles by marker and immediately queues the new tas
       }
       throw new Error(`Unexpected ${method} ${path}`);
     };
-    const first = await f.runtime.control("task-create", { jobId: chat.id, projectId, name: "Small task", description: "Implement and verify the change." }) as { task: Record<string, unknown>; job: Job };
-    const second = await f.runtime.control("task-create", { jobId: chat.id, projectId, name: "Small task", description: "Implement and verify the change." }) as { job: Job };
+    await assert.rejects(
+      f.runtime.control("task-create", { jobId: chat.id, projectId, name: "Small task", description: "Implement and verify the change." }),
+      /genuinely distinct/,
+    );
+    const first = await f.runtime.control("task-create", { jobId: chat.id, projectId, name: "Small task", description: "Implement and verify the change.", distinct: true }) as { task: Record<string, unknown>; job: Job };
+    const second = await f.runtime.control("task-create", { jobId: chat.id, projectId, name: "Small task", description: "Implement and verify the change.", distinct: true }) as { job: Job };
     assert.equal(first.task.id, "created-1");
     assert.equal(second.job.id, first.job.id);
     assert.equal(first.job.kind, "task");
     assert.equal(first.job.status, "queued");
     assert.match(String(created[0].description), new RegExp(`codepat-request:${chat.id}`));
+  } finally {
+    f.close();
+  }
+});
+
+test("chat continuation reuses an owned task conversation and durably updates the original task", async () => {
+  const f = fixture();
+  try {
+    const conversation = f.runtime.createConversation("alice", { sokosumi_organization_id: "org" });
+    const chat = f.runtime.createResponse("alice", conversation.id, "continue the existing task");
+    f.runtime.nextJob("runner", 1);
+    f.runtime.api = async () => ({ data: {
+      ...assignedTask,
+      status: "INPUT_REQUIRED",
+      selectableStatuses: ["RUNNING", "CANCELED"],
+    } });
+    const first = await f.runtime.control("task-continue", {
+      jobId: chat.id,
+      taskId: "task-1",
+      text: "Continue with the approved budget.",
+    }) as { job: Job; notificationId: string };
+    const repeated = await f.runtime.control("task-continue", {
+      jobId: chat.id,
+      taskId: "task-1",
+      text: "Continue with the approved budget.",
+    }) as { job: Job; notificationId: string };
+    assert.equal(first.job.id, repeated.job.id);
+    assert.equal(first.notificationId, repeated.notificationId);
+    assert.equal(first.job.taskId, "task-1");
+    assert.equal(first.job.kind, "task");
+    assert.equal(f.runtime.conversationOwner(first.job.conversationId), "alice");
+    assert.match(first.job.input, /Continue with the approved budget/);
+    const outbox = f.state.all<Outbox>("outbox");
+    assert.equal(outbox.length, 1);
+    assert.equal(outbox[0].path, "/tasks/task-1/events");
+    assert.equal(outbox[0].body.status, "RUNNING");
+    assert.match(String(outbox[0].body.comment), /Continue with the approved budget/);
+  } finally {
+    f.close();
+  }
+});
+
+test("chat continuation rejects another owner's task without creating work", async () => {
+  const f = fixture();
+  try {
+    const conversation = f.runtime.createConversation("alice", { sokosumi_organization_id: "org" });
+    const chat = f.runtime.createResponse("alice", conversation.id, "continue it");
+    f.runtime.nextJob("runner", 1);
+    f.runtime.api = async () => ({ data: { ...assignedTask, ownerId: "mallory" } });
+    await assert.rejects(
+      f.runtime.control("task-continue", {
+        jobId: chat.id,
+        taskId: "task-1",
+        text: "Continue",
+      }),
+      /ownership or organization/,
+    );
+    assert.equal(f.state.all("outbox").length, 0);
+    assert.equal(f.state.all<Job>("jobs").length, 1);
   } finally {
     f.close();
   }
@@ -392,6 +455,24 @@ test("scoped task reporting is idempotent and validates status, task and ownersh
       f.runtime.control("task-report", { jobId: chatJob.id, text: "no task" }),
       /No task in this request/,
     );
+  } finally {
+    f.close();
+  }
+});
+
+test("a comment-awakened terminal task can report RUNNING", async () => {
+  const f = fixture();
+  try {
+    const { job } = taskJob(f);
+    f.runtime.nextJob("runner", 1);
+    f.runtime.api = async () => ({ data: { ...assignedTask, status: "COMPLETED" } });
+    const result = await f.runtime.control("task-report", {
+      jobId: job.id,
+      status: "RUNNING",
+      text: "Continuing from the user's follow-up.",
+    }) as { ok: boolean };
+    assert.equal(result.ok, true);
+    assert.equal(f.state.all<Outbox>("outbox")[0].body.status, "RUNNING");
   } finally {
     f.close();
   }

@@ -9,8 +9,9 @@ if (action === "--help" || action === "help" || !action) {
   console.log(`CodePat (Node 24)
 status | repositories | instances | projects | project <uuid>
 task-status [task-id]
+task-continue <task-id> --file <comment.md>
 task-upload --file <path> [--name <filename>]
-task-create --project <uuid> --name <name> --description-file <path>
+task-create --distinct --project <uuid> --name <name> --description-file <path>
 task-recover <task-id> (owner/admin recovery; not available to a scoped turn)
 task-report <status> --file <comment.md>
 task-runtime list
@@ -47,6 +48,9 @@ switch (action) {
   case "task-status":
     body = { jobId, ...(args[0] ? { taskId: args[0] } : {}) };
     break;
+  case "task-continue":
+    body = { jobId, taskId: args[0], text: readFileSync(option("--file"), "utf8") };
+    break;
   case "task-upload":
     body = {
       jobId,
@@ -61,7 +65,8 @@ switch (action) {
     body = { jobId, status: args[0], text: readFileSync(option("--file"), "utf8") };
     break;
   case "task-create":
-    body = { jobId, projectId: option("--project"), name: option("--name"), description: readFileSync(option("--description-file"), "utf8") };
+    if (!args.includes("--distinct")) throw new Error("task-create requires --distinct; use task-continue for follow-ups");
+    body = { jobId, distinct: true, projectId: option("--project"), name: option("--name"), description: readFileSync(option("--description-file"), "utf8") };
     break;
   case "task-runtime":
     body = {
@@ -73,7 +78,7 @@ switch (action) {
     break;
   default:
     throw new Error(
-      "Usage: cli.ts status | repositories | instances | projects | project <uuid> | task-status [task-id] | task-upload --file <path> [--name <filename>] | task-report <status> --file <comment.md>",
+      "Usage: cli.ts status | repositories | instances | projects | project <uuid> | task-status [task-id] | task-continue <task-id> --file <comment.md> | task-upload --file <path> [--name <filename>] | task-report <status> --file <comment.md>",
     );
 }
 console.log(JSON.stringify(await control(action, body), null, 2));

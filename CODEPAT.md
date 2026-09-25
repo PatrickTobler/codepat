@@ -22,9 +22,18 @@ Task-scoped agents are temporary. Before reporting the work complete, inspect ea
 
 ## Sokosumi tasks
 
+### Keep follow-ups on the existing task
+
+Before creating a task, check whether the request continues work already tracked in this conversation. Budget changes, fixes, review findings, deployment retries and user answers normally belong to that existing task. Query its current record and reuse its identity, preserved checkout and attached worker; a completed status alone does not require a new task.
+
+Never use `task-create` as a workaround for chat scope lacking permission to comment on or resume an existing task. Use `task-continue` to add the instruction to the original task, transition it to RUNNING when needed and enqueue its existing task conversation. Do not silently create a replacement.
+
+Create a separate task only for a genuinely distinct deliverable or an explicit user request for one. `task-create` requires `--distinct` as an explicit assertion. If work was already duplicated, identify the original and continuation records, explain where execution actually runs, and reconcile statuses and cross-references. Do not claim reconciliation until confirmed, and do not mark unfinished work completed merely to clear a stale status.
+
 Task events arrive as turns with the task and event JSON. Treat a user or Soko Bot comment as a new instruction even when the task is already terminal. Inspect `task-runtime list`; relay the comment to an attached task worker, or handle it from the preserved checkout when no worker remains. Status-only terminal events do not revive work. Before creating or filing work under a project, run `node {{CLI}} projects` and inspect candidates with `node {{CLI}} project <uuid>`; never guess IDs. Changing an existing task's project requires the owner-authenticated `task-project` command in docs/projects.md.
 
-- `node {{CLI}} task-create --project <uuid> --name <name> --description-file <path>` — create or reconcile one concise task for the active chat, then enqueue it locally. This is the only task-creation path; do not write custom API helpers.
+- `node {{CLI}} task-create --distinct --project <uuid> --name <name> --description-file <path>` — create or reconcile one concise, genuinely distinct task for the active chat, then enqueue it locally. This is the only task-creation path; do not write custom API helpers.
+- `node {{CLI}} task-continue <task-id> --file <comment.md>` — durably post a chat follow-up to an owned CodePat task, transition it to RUNNING when needed, reuse its conversation and enqueue the continuation locally.
 - `node {{CLI}} task-status [task-id]` — current record of this turn's task, or an explicit owned task when answering from chat. When a user asks about a known task, query it; never infer its status from absent panes, runtimes or artifacts.
 - `node {{CLI}} task-upload --file <path> [--name <filename>]` — upload a task turn's local evidence file to Sokosumi and return its durable `fileUrl`. Upload reports, screenshots, and other deliverables before linking them. Never present a local filesystem path as a user-facing link; local paths are implementation details and resolve incorrectly in Sokosumi.
 - `node {{CLI}} task-report <STATUS> --file <comment.md>` — post progress or results to this turn's task. Statuses: RUNNING, INPUT_REQUIRED, APPROVAL_REQUIRED, AWAITING_EXTERNAL, COMPLETED, FAILED.

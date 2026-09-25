@@ -56,6 +56,7 @@ const SCOPED_ACTIONS = [
   "repositories",
   "instances",
   "task-status",
+  "task-continue",
   "task-upload",
   "task-report",
   "task-runtime",
@@ -78,6 +79,11 @@ interface TaskRuntime {
   taskId: string;
   conversationId: string;
   resources: TaskResource[];
+}
+
+interface TaskContinuationReceipt {
+  jobId: string;
+  notificationId: string;
 }
 
 const TASK_FILE_MAX_BYTES = 104_857_600;
@@ -407,27 +413,27 @@ export class Runtime implements ChatService {
       );
     return record(await response.json());
   }
-  async assertAssigned(id: string): Promise<Record<string, unknown>> {
+  async assertAssigned(id: string, allowTerminal = false): Promise<Record<string, unknown>> {
     const task = record(
       (await this.api(`/tasks/${encodeURIComponent(id)}`)).data,
     );
     if (
       task.assigneeId !== this.config.coworkerId ||
-      ![
+      (!allowTerminal && ![
         "READY",
         "RUNNING",
         "INPUT_REQUIRED",
         "APPROVAL_REQUIRED",
         "AUTHENTICATION_REQUIRED",
         "AWAITING_EXTERNAL",
-      ].includes(String(task.status))
+      ].includes(String(task.status)))
     )
       throw new Error("Task is no longer assigned or executable");
     return task;
   }
   async uploadTaskFile(job: Job, sourcePath: string, requestedName?: string): Promise<Record<string, unknown>> {
     if (!job.taskId) throw new Error("No task in this request");
-    const task = await this.assertAssigned(job.taskId);
+    const task = await this.assertAssigned(job.taskId, true);
     const conversation = this.taskConversation(job);
     this.assertTaskOwner(task, conversation);
     const info = await stat(sourcePath);
@@ -502,6 +508,8 @@ export class Runtime implements ChatService {
   }
   async createTask(job: Job, body: Record<string, unknown>): Promise<{ task: Record<string, unknown>; job: Job }> {
     if (job.kind !== "chat") throw new Error("Tasks can only be created from a chat request");
+    if (body.distinct !== true)
+      throw new Error("Confirm this is a genuinely distinct deliverable; otherwise use task-continue on the existing task");
     const conversation = this.state.get<Conversation>("conversations", job.conversationId);
     if (!conversation) throw new Error("Conversation not found");
     const organizationId = textField(conversation.metadata, "sokosumi_organization_id");
@@ -552,6 +560,76 @@ export class Runtime implements ChatService {
       input: `New Sokosumi task created from chat. Begin the work described by the task. Task: ${JSON.stringify(task)}`,
     }, `task-created:${taskId}`);
     return { task, job: taskJob };
+  }
+  async continueTask(job: Job, body: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (job.kind !== "chat") throw new Error("Existing tasks can only be continued from a chat request");
+    const taskId = textField(body, "taskId");
+    const content = textField(body, "text");
+    if (content.length > 20_000) throw new Error("Task continuation is too long");
+    const receiptId = createHash("sha256")
+      .update(JSON.stringify([job.id, taskId, content]))
+      .digest("hex");
+    const previous = this.state.get<TaskContinuationReceipt>("taskContinuationReceipts", receiptId);
+    if (previous)
+      return {
+        job: this.job(previous.jobId),
+        ...this.taskReportResult(previous.notificationId),
+      };
+    const requestingConversation = this.taskConversation(job);
+    const headers = this.contextHeaders(requestingConversation);
+    const task = record(
+      (await this.api(`/tasks/${encodeURIComponent(taskId)}`, "GET", undefined, headers)).data,
+    );
+    this.assertTaskOwner(task, requestingConversation);
+    if ((task.assigneeId ?? task.coworkerId) !== this.config.coworkerId)
+      throw new Error("Task is no longer assigned to CodePat");
+    const selectable = Array.isArray(task.selectableStatuses)
+      ? task.selectableStatuses.map(String)
+      : undefined;
+    if (task.status !== "RUNNING" && selectable && !selectable.includes("RUNNING"))
+      throw new Error("Task cannot transition to RUNNING");
+    return this.state.transaction(() => {
+      const raced = this.state.get<TaskContinuationReceipt>("taskContinuationReceipts", receiptId);
+      if (raced)
+        return {
+          job: this.job(raced.jobId),
+          ...this.taskReportResult(raced.notificationId),
+        };
+      let conversationId = this.state.get<string>("taskConversations", taskId);
+      if (conversationId) {
+        const existing = this.state.get<Conversation>("conversations", conversationId);
+        if (!existing || existing.owner !== requestingConversation.owner ||
+            existing.metadata.sokosumi_organization_id !== requestingConversation.metadata.sokosumi_organization_id)
+          throw new Error("Task ownership or organization changed");
+      } else {
+        conversationId = this.createConversation(requestingConversation.owner, {
+          taskId,
+          sokosumi_organization_id: textField(requestingConversation.metadata, "sokosumi_organization_id"),
+        }).id;
+        this.state.put("taskConversations", taskId, conversationId);
+      }
+      const taskJob = this.state.enqueue({
+        conversationId,
+        kind: "task",
+        taskId,
+        input: `Continue this existing Sokosumi task from the user's chat instruction. Inspect its preserved checkout and attached runtime before acting. Task: ${JSON.stringify(task)}\nFollow-up: ${content}`,
+      }, `task-continue:${receiptId}`);
+      const notificationId = this.reportTask(
+        taskId,
+        content,
+        task.status === "RUNNING" ? undefined : "RUNNING",
+        conversationId,
+      );
+      this.state.put<TaskContinuationReceipt>("taskContinuationReceipts", receiptId, {
+        jobId: taskJob.id,
+        notificationId,
+      });
+      return {
+        task,
+        job: taskJob,
+        ...this.taskReportResult(notificationId),
+      };
+    });
   }
   async pollTasks(): Promise<void> {
     if (!this.config.apiKey || !this.config.coworkerId) return;
@@ -891,6 +969,7 @@ export class Runtime implements ChatService {
       this.assertTaskOwner(task, this.taskConversation(job));
       return task;
     }
+    if (action === "task-continue") return this.continueTask(job, body);
     if (action === "task-upload")
       return this.uploadTaskFile(
         job,
@@ -943,7 +1022,7 @@ export class Runtime implements ChatService {
       const receipt = createHash("sha256").update(JSON.stringify([job.id, job.conversationId, job.taskId, status ?? null, content])).digest("hex");
       const previous = this.state.get<{ notificationId: string }>("taskReportReceipts", receipt);
       if (previous) return this.taskReportResult(previous.notificationId);
-      const task = await this.assertAssigned(job.taskId);
+      const task = await this.assertAssigned(job.taskId, true);
       this.assertTaskOwner(task, this.taskConversation(job));
       if (
         status &&
