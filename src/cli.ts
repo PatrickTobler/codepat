@@ -9,6 +9,7 @@ if (action === "--help" || action === "help" || !action) {
   console.log(`CodePat (Node 24)
 status | repositories | instances | projects | project <uuid>
 task-status [task-id]
+task-upload --file <path> [--name <filename>]
 task-create --project <uuid> --name <name> --description-file <path>
 task-recover <task-id> (owner/admin recovery; not available to a scoped turn)
 task-report <status> --file <comment.md>
@@ -46,6 +47,13 @@ switch (action) {
   case "task-status":
     body = { jobId, ...(args[0] ? { taskId: args[0] } : {}) };
     break;
+  case "task-upload":
+    body = {
+      jobId,
+      path: option("--file"),
+      ...(args.includes("--name") ? { name: option("--name") } : {}),
+    };
+    break;
   case "project":
     body = { jobId, projectId: args[0] };
     break;
@@ -65,7 +73,7 @@ switch (action) {
     break;
   default:
     throw new Error(
-      "Usage: cli.ts status | repositories | instances | projects | project <uuid> | task-status [task-id] | task-report <status> --file <comment.md>",
+      "Usage: cli.ts status | repositories | instances | projects | project <uuid> | task-status [task-id] | task-upload --file <path> [--name <filename>] | task-report <status> --file <comment.md>",
     );
 }
 console.log(JSON.stringify(await control(action, body), null, 2));

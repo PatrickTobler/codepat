@@ -3,7 +3,8 @@ import { MAX_PROGRESS, validateProgress, type Progress } from "./progress.ts";
 import { failureText } from "./recovery.ts";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { readFile, stat } from "node:fs/promises";
+import { basename, extname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { HerdrPort } from "./herdr.ts";
 import type { ChatService } from "./http.ts";
@@ -55,6 +56,7 @@ const SCOPED_ACTIONS = [
   "repositories",
   "instances",
   "task-status",
+  "task-upload",
   "task-report",
   "task-runtime",
   "task-create",
@@ -77,6 +79,26 @@ interface TaskRuntime {
   conversationId: string;
   resources: TaskResource[];
 }
+
+const TASK_FILE_MAX_BYTES = 104_857_600;
+const TASK_FILE_TYPES: Record<string, string> = {
+  ".css": "text/css",
+  ".csv": "text/csv",
+  ".gif": "image/gif",
+  ".html": "text/html",
+  ".jpeg": "image/jpeg",
+  ".jpg": "image/jpeg",
+  ".js": "text/javascript",
+  ".json": "application/json",
+  ".md": "text/markdown",
+  ".pdf": "application/pdf",
+  ".png": "image/png",
+  ".txt": "text/plain",
+  ".webp": "image/webp",
+  ".yaml": "application/yaml",
+  ".yml": "application/yaml",
+  ".zip": "application/zip",
+};
 
 export class Runtime implements ChatService {
   state: State;
@@ -402,6 +424,57 @@ export class Runtime implements ChatService {
     )
       throw new Error("Task is no longer assigned or executable");
     return task;
+  }
+  async uploadTaskFile(job: Job, sourcePath: string, requestedName?: string): Promise<Record<string, unknown>> {
+    if (!job.taskId) throw new Error("No task in this request");
+    const task = await this.assertAssigned(job.taskId);
+    const conversation = this.taskConversation(job);
+    this.assertTaskOwner(task, conversation);
+    const info = await stat(sourcePath);
+    if (!info.isFile()) throw new Error("Task upload path must be a regular file");
+    if (info.size < 1) throw new Error("Task upload file must not be empty");
+    if (info.size > TASK_FILE_MAX_BYTES) throw new Error("Task upload file exceeds Sokosumi's 100 MiB limit");
+    const name = requestedName?.trim() || basename(sourcePath);
+    if (name !== basename(name) || name.length > 512) throw new Error("Task upload name must be a filename of at most 512 characters");
+    const contentType = TASK_FILE_TYPES[extname(name).toLowerCase()] ?? "application/octet-stream";
+    const headers = this.contextHeaders(conversation);
+    const filesPath = `/tasks/${encodeURIComponent(job.taskId)}/files`;
+    const existing = (await this.api(filesPath, "GET", undefined, headers)).data;
+    const existingIds = new Set(Array.isArray(existing) ? existing.map(item => String(record(item).id)) : []);
+    const session = record((await this.api(filesPath, "POST", {
+      filename: name,
+      contentType,
+      size: info.size,
+    }, headers)).data);
+    const uploadUrl = new URL(textField(session, "uploadUrl"));
+    const apiUrl = new URL(this.config.apiUrl);
+    const productionBlob = uploadUrl.protocol === "https:" &&
+      (uploadUrl.hostname === "blob.vercel-storage.com" || uploadUrl.hostname.endsWith(".blob.vercel-storage.com"));
+    const localTestUpload = ["127.0.0.1", "localhost", "::1"].includes(apiUrl.hostname) && uploadUrl.origin === apiUrl.origin;
+    if (!productionBlob && !localTestUpload) throw new Error("Sokosumi returned an untrusted task upload URL");
+    const uploadHeaders = record(session.headers);
+    const response = await fetch(uploadUrl, {
+      method: "PUT",
+      headers: { "Content-Type": textField(uploadHeaders, "Content-Type") },
+      body: await readFile(sourcePath),
+      signal: AbortSignal.timeout(120_000),
+    });
+    if (!response.ok) throw new Error(`Task file upload failed (${response.status})`);
+    let blobUrl: string | undefined;
+    try {
+      const uploaded = record(await response.json());
+      if (typeof uploaded.url === "string") blobUrl = uploaded.url;
+    } catch {}
+    for (let attempt = 0; attempt < 40; attempt++) {
+      const listed = (await this.api(filesPath, "GET", undefined, headers)).data;
+      const file = Array.isArray(listed)
+        ? listed.map(record).find(item => !existingIds.has(String(item.id)) && item.name === name && item.size === info.size)
+        : undefined;
+      if (file && typeof file.fileUrl === "string") return file;
+      await delay(250);
+    }
+    if (blobUrl) return { name, fileUrl: blobUrl, size: info.size, mimeType: contentType, registration: "pending" };
+    throw new Error("Task file bytes were accepted but Sokosumi has not registered the file yet; inspect the task before retrying");
   }
   async recoverTask(id: string): Promise<Job> {
     const task = await this.assertAssigned(id);
@@ -811,6 +884,12 @@ export class Runtime implements ChatService {
       this.assertTaskOwner(task, this.taskConversation(job));
       return task;
     }
+    if (action === "task-upload")
+      return this.uploadTaskFile(
+        job,
+        textField(body, "path"),
+        typeof body.name === "string" ? body.name : undefined,
+      );
     if (action === "task-create") return this.createTask(job, body);
     if (action === "task-runtime") {
       if (!job.taskId) throw new Error("No task in this request");

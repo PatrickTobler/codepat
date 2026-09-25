@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -167,7 +168,7 @@ test("scoped turn credentials authorize only the small coordinator surface", () 
     const job = f.runtime.createResponse("alice", c.id, "work");
     const next = f.runtime.nextJob("runner", 1)!;
     const token = f.token(next.jobConfig);
-    for (const action of ["instances", "repositories", "projects", "project", "task-create", "task-status", "task-report", "task-runtime", "progress"])
+    for (const action of ["instances", "repositories", "projects", "project", "task-create", "task-status", "task-upload", "task-report", "task-runtime", "progress"])
       assert.equal(f.runtime.authorizeControl(token, action, { jobId: job.id }), true, action);
     for (const action of ["start", "workers", "send", "resume", "read", "stop", "next", "reply", "begin-turn", "status", "recover-chat"])
       assert.equal(f.runtime.authorizeControl(token, action, { jobId: job.id }), false, action);
@@ -391,6 +392,86 @@ test("scoped task reporting is idempotent and validates status, task and ownersh
       f.runtime.control("task-report", { jobId: chatJob.id, text: "no task" }),
       /No task in this request/,
     );
+  } finally {
+    f.close();
+  }
+});
+
+test("task upload returns a registered Sokosumi file URL without forwarding credentials", async (t) => {
+  const f = fixture();
+  const bytes = "verification evidence\n";
+  const path = join(f.dir, "verification.md");
+  writeFileSync(path, bytes);
+  let uploadAuthorization: string | undefined;
+  let uploaded = "";
+  let registered = false;
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://localhost");
+    if (request.method === "GET" && url.pathname === "/tasks/task-1") {
+      response.setHeader("Content-Type", "application/json");
+      response.end(JSON.stringify({ data: assignedTask }));
+      return;
+    }
+    if (request.method === "GET" && url.pathname === "/tasks/task-1/files") {
+      response.setHeader("Content-Type", "application/json");
+      response.end(JSON.stringify({ data: registered ? [{
+        id: "file-1",
+        taskId: "task-1",
+        name: "verification.md",
+        fileUrl: "https://public.blob.vercel-storage.com/tasks/task-1/verification.md",
+        mimeType: "text/markdown",
+        size: Buffer.byteLength(bytes),
+        status: "UPLOADED",
+      }] : [] }));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/tasks/task-1/files") {
+      assert.equal(request.headers.authorization, "Bearer test");
+      assert.equal(request.headers["x-context-user-id"], "alice");
+      assert.equal(request.headers["x-context-organization-id"], "org");
+      response.statusCode = 201;
+      response.setHeader("Content-Type", "application/json");
+      const address = server.address();
+      assert.ok(address && typeof address !== "string");
+      response.end(JSON.stringify({ data: {
+        uploadUrl: `http://127.0.0.1:${address.port}/blob-upload`,
+        pathname: "tasks/task-1/verification.md",
+        access: "public",
+        method: "PUT",
+        headers: { "Content-Type": "text/markdown" },
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        maxSizeBytes: 104_857_600,
+        addRandomSuffix: true,
+      } }));
+      return;
+    }
+    if (request.method === "PUT" && url.pathname === "/blob-upload") {
+      uploadAuthorization = request.headers.authorization;
+      request.setEncoding("utf8");
+      request.on("data", chunk => { uploaded += chunk; });
+      request.on("end", () => {
+        registered = true;
+        response.setHeader("Content-Type", "application/json");
+        response.end(JSON.stringify({ url: "https://public.blob.vercel-storage.com/tasks/task-1/verification.md" }));
+      });
+      return;
+    }
+    response.statusCode = 404;
+    response.end();
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  f.config.apiUrl = `http://127.0.0.1:${address.port}`;
+  try {
+    const { job } = taskJob(f);
+    f.runtime.nextJob("runner", 1);
+    const result = await f.runtime.control("task-upload", { jobId: job.id, path }) as Record<string, unknown>;
+    assert.equal(result.fileUrl, "https://public.blob.vercel-storage.com/tasks/task-1/verification.md");
+    assert.equal(result.name, "verification.md");
+    assert.equal(uploadAuthorization, undefined);
+    assert.equal(uploaded, bytes);
   } finally {
     f.close();
   }
