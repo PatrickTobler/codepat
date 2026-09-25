@@ -92,8 +92,8 @@ async function fixture(t: TestContext) {
     coworkerId: "codepat",
   };
   const runtime = new Runtime(state, herdr, config);
-  function addTask(id: string, status = "READY", assigneeId = "codepat") {
-    tasks.set(id, { id, status, assigneeId, userId: "alice" });
+  function addTask(id: string, status = "READY", assigneeId = "codepat", userId = "alice") {
+    tasks.set(id, { id, status, assigneeId, userId });
   }
   return {
     state,
@@ -214,6 +214,21 @@ test("comments on a consolidated duplicate are queued on the original", async (t
   assert.equal(f.runtime.pollError, undefined);
   assert.equal(f.state.all<Job>("jobs")[0].taskId, "original");
   assert.equal(f.state.get<{ taskId: string }>("taskInputs", "followup")?.taskId, "original");
+});
+
+test("an ownership change cannot reuse context or stall unrelated event intake", async (t) => {
+  const f = await fixture(t);
+  f.addTask("changed");
+  f.events.push({ id: "initial", taskId: "changed" });
+  await f.runtime.pollTasks();
+  f.addTask("changed", "RUNNING", "codepat", "bob");
+  f.addTask("other");
+  f.events.push({ id: "changed-owner", taskId: "changed", comment: "New owner instruction" }, { id: "next", taskId: "other" });
+  await f.runtime.pollTasks();
+  assert.equal(f.runtime.pollError, undefined);
+  assert.equal(f.state.get("meta", "taskCursor"), "next");
+  assert.deepEqual(f.state.all<Job>("jobs").map(job => job.taskId), ["changed", "other"]);
+  assert.equal(f.state.all("taskIntakeIssues").length, 1);
 });
 
 test("current actor metadata prevents self-authored comments from looping", async (t) => {

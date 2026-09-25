@@ -776,8 +776,10 @@ export class Runtime implements ChatService {
                   this.state.put("taskConversations", taskId, conversationId);
                 }
                 const existing = this.state.get<Conversation>("conversations", conversationId);
-                if (!existing || existing.owner !== owner || existing.metadata.sokosumi_organization_id !== eventTask.organizationId)
-                  throw new Error("Task ownership or organization changed");
+                if (!existing || existing.owner !== owner || existing.metadata.sokosumi_organization_id !== eventTask.organizationId) {
+                  this.state.put("taskIntakeIssues", taskId, { taskId, reason: "Task ownership or organization changed; existing conversation was not reused" });
+                  return;
+                }
                 const delivery = this.state.enqueue(
                   {
                     conversationId,
@@ -1056,6 +1058,7 @@ export class Runtime implements ChatService {
         runnerAt: this.runnerAt,
         storage: this.storageHealth(),
         pollError: this.pollError,
+        intakeIssues: this.state.all("taskIntakeIssues"),
         reconciliationError: this.reconciliationError,
         taskHealth: this.state.all<TaskHealth>("taskHealth").filter(task => task.issue),
         unacknowledgedInputs: this.state.all<TaskInput>("taskInputs").filter(input => !input.acknowledgement).map(input => ({ id: input.id, taskId: input.taskId, receivedAt: input.receivedAt })),
