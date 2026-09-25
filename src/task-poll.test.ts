@@ -12,7 +12,9 @@ import { type Job, State } from "./state.ts";
 interface TaskEvent {
   id: string;
   taskId: string;
-  coworkerId: string | null;
+  coworkerId?: string | null;
+  actor?: { type: "user" | "coworker" | "sokoBot"; id: string };
+  comment?: string | null;
 }
 interface Task {
   id: string;
@@ -155,6 +157,32 @@ test("follow-up events reuse the existing task conversation", async (t) => {
   assert.equal(jobs[0].conversationId, jobs[1].conversationId);
 });
 
+test("a user comment on a completed task wakes its existing conversation", async (t) => {
+  const f = await fixture(t);
+  f.addTask("task", "RUNNING");
+  f.events.push({
+    id: "initial-1",
+    taskId: "task",
+    actor: { type: "user", id: "alice" },
+  });
+  await f.runtime.pollTasks();
+  const conversationId = f.state.all<Job>("jobs")[0].conversationId;
+  f.addTask("task", "COMPLETED");
+  f.events.push({
+    id: "comment-1",
+    taskId: "task",
+    actor: { type: "user", id: "alice" },
+    comment: "Where is the GitHub PR?",
+  });
+  await f.runtime.pollTasks();
+  assert.equal(f.runtime.pollError, undefined);
+  const jobs = f.state.all<Job>("jobs");
+  assert.equal(jobs.length, 2);
+  assert.equal(jobs[1].taskId, "task");
+  assert.equal(jobs[1].conversationId, conversationId);
+  assert.match(jobs[1].input, /Where is the GitHub PR\?/);
+});
+
 test("self-authored progress advances the cursor without an orchestration loop", async (t) => {
   const f = await fixture(t);
   f.addTask("task", "RUNNING");
@@ -166,6 +194,21 @@ test("self-authored progress advances the cursor without an orchestration loop",
   assert.equal(f.state.get("meta", "taskCursor"), "self-1");
   assert.deepEqual(f.requestedCursors, [null, "self-1"]);
   assert.deepEqual(f.requestedTasks, []);
+});
+
+test("current actor metadata prevents self-authored comments from looping", async (t) => {
+  const f = await fixture(t);
+  f.addTask("task", "RUNNING");
+  f.events.push({
+    id: "self-actor-1",
+    taskId: "task",
+    actor: { type: "coworker", id: "codepat" },
+    comment: "Still working",
+  });
+  await f.runtime.pollTasks();
+  assert.equal(f.runtime.pollError, undefined);
+  assert.equal(f.state.all("jobs").length, 0);
+  assert.equal(f.state.get("meta", "taskCursor"), "self-actor-1");
 });
 
 test("a removed task advances the cursor without poisoning later events", async (t) => {

@@ -568,7 +568,14 @@ export class Runtime implements ChatService {
         const taskId = textField(event, "taskId");
         if (!this.state.get<boolean>("taskEvents", id)) {
           // Self-authored progress advances the cursor without an orchestration loop.
-          if (event.coworkerId !== this.config.coworkerId) {
+          const actor = event.actor && typeof event.actor === "object" && !Array.isArray(event.actor)
+            ? record(event.actor)
+            : undefined;
+          const selfAuthored = actor
+            ? actor.type === "coworker" && actor.id === this.config.coworkerId
+            : event.coworkerId === this.config.coworkerId;
+          if (!selfAuthored) {
+            const hasComment = typeof event.comment === "string" && Boolean(event.comment.trim());
             let task: Record<string, unknown> | undefined;
             try {
               task = record(
@@ -581,7 +588,7 @@ export class Runtime implements ChatService {
             if (
               task &&
               task.assigneeId === this.config.coworkerId &&
-              !INERT_TASK_STATUSES.includes(String(task.status))
+              (hasComment || !INERT_TASK_STATUSES.includes(String(task.status)))
             ) {
               const owner = textField(task, typeof task.ownerId === "string" ? "ownerId" : "userId");
               let conversationId = this.state.get<string>("taskConversations", taskId);
