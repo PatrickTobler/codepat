@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
-import { CodexProgress, MAX_PROGRESS, ProgressJournal } from "./progress.ts";
+import { ClaudeProgress, CodexProgress, MAX_PROGRESS, ProgressJournal } from "./progress.ts";
 import { Runtime } from "./runtime.ts";
 import { State } from "./state.ts";
 import { createCodePatServer } from "./http.ts";
@@ -189,4 +189,26 @@ test("recovered attempts reject old SSE cursors and old progress credentials", a
   const response = await fetch(`${f.base}/v1/responses/${f.job.id}?stream=true`, {headers:f.headers});
   const stream = reader(response); assert.equal((await stream.next()).id, `${f.job.id}:g1:0`);
   await stream.cancel(); assert.equal(next.job.id,f.job.id);
+});
+
+test("Claude fallback streams commentary and tool labels, never thinking, tool input or the final answer", () => {
+  const items: { key: string; kind: string; text: string }[] = [];
+  const p = new ClaudeProgress(item => items.push(item));
+  p.ingest({ type: "assistant", message: { id: "msg_1", content: [
+    { type: "thinking", thinking: "private plan" },
+    { type: "text", text: "Checking the PR checks first." },
+    { type: "tool_use", id: "toolu_1", name: "Bash", input: { command: "gh pr checks secret-arg" } },
+  ] } });
+  p.ingest({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "private output" }] } });
+  p.ingest({ type: "assistant", message: { id: "msg_2", content: [{ type: "tool_use", id: "toolu_2", name: "mcp__chrome__click", input: {} }] } });
+  p.ingest({ type: "assistant", message: { id: "msg_3", content: [{ type: "text", text: "All green. PR #1 is ready." }] } });
+  p.ingest({ type: "result", subtype: "success", result: "All green. PR #1 is ready." });
+  p.finish();
+  assert.deepEqual(items.map(i => [i.kind, i.text]), [
+    ["commentary", "Checking the PR checks first."],
+    ["activity", "Running a command…"],
+    ["activity", "Step finished"],
+    ["activity", "Using a connected tool…"],
+  ]);
+  assert.doesNotMatch(JSON.stringify(items), /private|secret-arg|ready/);
 });

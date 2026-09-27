@@ -10,6 +10,8 @@ Repository shortcuts (`node {{CLI}} repositories`) are conveniences, not an allo
 
 A request to create a PR authorizes the necessary implementation, checks, commit, branch push and PR creation. Default to draft and return the actual PR link. Do not merge or deploy unless requested or previously authorized. Preserve other users' work and keep secrets out of messages and logs.
 
+Chat turns must answer within about two minutes. Sokosumi stops waiting after five and the reply is lost. Answer questions and status checks directly. For anything that needs code changes, builds, CI waits, deploys or browser checks, create a task or `task-continue` an existing one, then reply in one or two lines with the task link and whether it starts now or waits for a free slot. Let the task do the work.
+
 ## Herdr
 
 Herdr is the terminal multiplexer on this host. Operate it directly with the installed `herdr` CLI; run `herdr --skill` for the current command reference. You may create workspaces, tabs and agents, prompt them, read their output, and coordinate long-running work in parallel panes — the same way the local user does. Start agents with the trusted local permission configuration (for Codex: `-s danger-full-access -a never`; for Claude: `--permission-mode bypassPermissions` or `acceptEdits` as appropriate). Never answer dialogs in unrelated panes or other users' sessions.

@@ -1,6 +1,6 @@
 import { TurnFailure } from "./turn-failure.ts";
 import { ClaudeTurn, claudeArgs, FALLBACK_NOTE, shouldFallBack } from "./orchestrator-fallback.ts";
-import { CodexProgress, ProgressJournal } from "./progress.ts";
+import { ClaudeProgress, CodexProgress, ProgressJournal } from "./progress.ts";
 import { turnTimeouts, turnDeadlines, failureKind, failureText, saveReceipt, type TurnReceipt } from "./recovery.ts";
 import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -277,6 +277,8 @@ while (!stopping) {
       receipt.fallback = "claude";
       saveReceipt(receiptPath, receipt);
       turnSettled = false;
+      const claudeProgress = new ClaudeProgress(item => journal.append({ ...item, key: `${generation}:claude:${item.key}` }));
+      const claudeTimer = setInterval(() => { void flushProgress().catch(() => undefined); }, 200);
       try {
         ({ exitCode, timedOut } = await runUnit("claude", claudeArgs({
           conversationId: typeof job.conversationId === "string" ? job.conversationId : undefined,
@@ -284,6 +286,7 @@ while (!stopping) {
         }), turnEnv, limits, FALLBACK_NOTE + prompt, (event) => {
           const message = claude.ingest(event);
           if (message) console.log(message);
+          claudeProgress.ingest(event);
           if (claude.text !== undefined) {
             // Write the answer before marking completion so recovery can deliver it.
             writeFileSync(output, claude.text, { mode: 0o600 });
@@ -292,6 +295,9 @@ while (!stopping) {
           }
         }));
       } finally {
+        clearInterval(claudeTimer);
+        claudeProgress.finish();
+        await flushProgress().catch(() => undefined);
         unitResult = await settleTurn(activeUnit);
         turnSettled = true;
       }

@@ -62,6 +62,46 @@ export class CodexProgress {
   finish(): void { this.pending = undefined; }
 }
 
+const claudeLabels: Record<string, string> = {
+  Bash: "Running a command", Edit: "Updating files", MultiEdit: "Updating files", Write: "Updating files",
+  NotebookEdit: "Updating files", Read: "Reading files", Grep: "Reading files", Glob: "Reading files",
+  WebSearch: "Searching the web", WebFetch: "Searching the web", TodoWrite: "Updating the plan",
+};
+// Claude Code stream-json: assistant text is commentary once later work follows it;
+// the last text before the result is the final answer. Thinking and tool input stay private.
+export class ClaudeProgress {
+  private pending?: Progress;
+  private seen = new Set<string>();
+  private emit: (item: Progress) => void;
+  constructor(emit: (item: Progress) => void) { this.emit = emit; }
+  private once(item: Progress): void {
+    if (!/^[a-zA-Z0-9_.:-]{1,120}$/.test(item.key) || this.seen.has(item.key) || this.seen.size >= 2048) return;
+    this.seen.add(item.key);
+    this.emit(item);
+  }
+  private flush(): void { if (this.pending) this.once(this.pending); this.pending = undefined; }
+  ingest(value: unknown): void {
+    const event = object(value);
+    const content = object(event.message).content;
+    if (!Array.isArray(content)) return;
+    const messageId = String(object(event.message).id ?? "");
+    content.map(object).forEach((part, index) => {
+      if (event.type === "assistant" && part.type === "text" && typeof part.text === "string" && part.text.trim()) {
+        this.flush();
+        this.pending = { key: `${messageId}:${index}`, kind: "commentary", text: part.text.trim().slice(0, 1000) };
+      } else if (event.type === "assistant" && part.type === "tool_use" && typeof part.id === "string") {
+        this.flush();
+        const name = String(part.name ?? "");
+        const label = claudeLabels[name] ?? (name.startsWith("mcp__") ? "Using a connected tool" : "Working");
+        this.once({ key: `${part.id}:started`, kind: "activity", text: `${label}…` });
+      } else if (event.type === "user" && part.type === "tool_result" && typeof part.tool_use_id === "string") {
+        this.once({ key: `${part.tool_use_id}:completed`, kind: "activity", text: "Step finished" });
+      }
+    });
+  }
+  finish(): void { this.pending = undefined; }
+}
+
 // Only projected public text reaches disk or control. Bounded independently of
 // network speed; an interrupted runner leaves this journal for bridge recovery.
 export class ProgressJournal {
