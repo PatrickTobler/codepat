@@ -59,3 +59,10 @@ test("tool failure, arbitrary output and private reasoning never become diagnost
   assert.equal(f.resolve("turn_exit_failure"),"turn_exit_failure");
   assert.equal(f.resolve(undefined),undefined);
 });
+
+test("usage limit hit while compacting a long thread is still a usage limit", () => {
+  const f = new TurnFailure();
+  f.ingest({type:"turn.failed",error:{message:"Error running remote compact task: You've hit your usage limit. Visit https://example.invalid/usage"}});
+  assert.equal(f.resolve("turn_exit_failure"), "provider_usage_limit");
+  assert.doesNotMatch(JSON.stringify(f), /example\.invalid/);
+});
