@@ -29,6 +29,7 @@ export interface RuntimeConfig {
   coworkerId?: string;
   repositories?: Record<string, string>;
   runnerSlots?: number;
+  maxActiveTasks?: number;
 }
 interface Scope {
   id: string;
@@ -52,6 +53,14 @@ const INERT_TASK_STATUSES = [
   "FAILED",
   "CANCELED",
 ];
+// A task in one of these states gives its active-task slot to the next waiting task.
+const PAUSED_TASK_STATUSES = [
+  "INPUT_REQUIRED",
+  "APPROVAL_REQUIRED",
+  "COMPLETED",
+  "FAILED",
+  "CANCELED",
+];
 const SCOPED_ACTIONS = [
   "progress",
   "projects",
@@ -67,6 +76,7 @@ const SCOPED_ACTIONS = [
   "task-input",
   "tasks",
   "task-consolidate",
+  "task-start-now",
 ];
 
 interface TaskResource {
@@ -148,6 +158,41 @@ export class Runtime implements ChatService {
   private startedAt = Date.now();
   get runnerSlots(): number {
     return this.config.runnerSlots ?? 1;
+  }
+  get maxActiveTasks(): number {
+    return this.config.maxActiveTasks ?? Infinity;
+  }
+  // A task holds an active slot from its first turn until it pauses or ends, or
+  // until it has neither a live agent nor pending coordinator work.
+  taskSlots(jobs: Job[]): { started: Set<string>; open: Set<string> } {
+    const started = new Set(this.state.all<string>("taskStarts"));
+    for (const job of jobs) if (job.taskId && job.submittedAt) started.add(job.taskId);
+    const live = new Set(this.state.all<TaskRuntime>("taskRuntimes")
+      .filter((runtime) => runtime.resources.some((resource) => resource.kind === "external" || resource.status !== "missing"))
+      .map((runtime) => runtime.taskId));
+    const pending = new Set(jobs
+      .filter((job) => job.taskId && ["queued", "in_progress"].includes(job.status))
+      .map((job) => job.taskId!));
+    const open = new Set([...started].filter((id) => (live.has(id) || pending.has(id)) &&
+      !PAUSED_TASK_STATUSES.includes(this.state.get<string>("taskStatus", id) ?? "")));
+    return { started, open };
+  }
+  // Post one queue notice per waiting task so it does not look stuck.
+  noticeWaitingTasks(): void {
+    const jobs = this.state.all<Job>("jobs");
+    const { started, open } = this.taskSlots(jobs);
+    if (open.size < this.maxActiveTasks) return;
+    const waiting = [...new Set(jobs
+      .filter((job) => job.status === "queued" && job.taskId && !started.has(job.taskId) &&
+        !this.state.get("taskStartNow", job.taskId))
+      .map((job) => job.taskId!))];
+    waiting.forEach((taskId, ahead) => {
+      if (this.state.get("taskQueueNotices", taskId)) return;
+      this.state.transaction(() => {
+        this.reportTask(taskId, `Queued: ${open.size} tasks are active (limit ${this.maxActiveTasks}) and ${ahead} ${ahead === 1 ? "task is" : "tasks are"} ahead of this one. CodePat starts it automatically when an active task finishes.`);
+        this.state.put("taskQueueNotices", taskId, true);
+      });
+    });
   }
   runnerSeenAt(slot: number): number {
     return this.runnerSeen.get(slot) ?? 0;
@@ -325,8 +370,12 @@ export class Runtime implements ChatService {
       !busy.has(job.conversationId) && !(job.taskId && busy.has(job.taskId)));
     // Task turns leave one slot free so chat replies never wait behind them.
     const taskRoom = active.length < Math.max(1, this.runnerSlots - 1);
+    // New tasks wait, oldest first, while the active-task limit is reached.
+    const { started, open } = this.taskSlots(jobs);
+    const startable = (job: Job) => !job.taskId || started.has(job.taskId) ||
+      open.size < this.maxActiveTasks || Boolean(this.state.get("taskStartNow", job.taskId));
     const job = mine ?? queued.find((job) => job.kind === "chat") ??
-      (taskRoom ? queued.find((job) => job.kind === "task") : undefined);
+      (taskRoom ? queued.find((job) => job.kind === "task" && startable(job)) : undefined);
     if (!job) return null;
     // Prepare credentials before marking a claim; an I/O failure leaves the job queued.
     let jobConfig = this.state.get<string>("jobConfigs", job.id);
@@ -338,6 +387,7 @@ export class Runtime implements ChatService {
       this.state.put("jobs", job.id, job);
       this.state.put("jobConfigs", job.id, jobConfig);
       this.state.put("claims", job.id, runnerId ?? "test");
+      if (job.taskId && !started.has(job.taskId)) this.state.put("taskStarts", job.taskId, job.taskId);
     });
     return {
       job,
@@ -435,6 +485,7 @@ export class Runtime implements ChatService {
       conversationId ?? this.state.get<string>("taskConversations", id),
     );
     if (status) {
+      this.state.put("taskStatus", id, status);
       const item = this.state.get<Outbox>("outbox", notificationId)!;
       item.requestedTaskStatus = status;
       this.state.put("outbox", notificationId, item);
@@ -788,6 +839,7 @@ export class Runtime implements ChatService {
               if (!(error instanceof ApiError && [403, 404].includes(error.status)))
                 throw error;
             }
+            if (task) this.state.put("taskStatus", taskId, String(task.status));
             if (
               task &&
               task.assigneeId === this.config.coworkerId &&
@@ -1205,6 +1257,13 @@ export class Runtime implements ChatService {
         typeof body.name === "string" ? body.name : undefined,
       );
     if (action === "task-create") return this.createTask(job, body);
+    if (action === "task-start-now") {
+      if (job.kind !== "chat") throw new Error("Only a chat request can start a waiting task early");
+      const taskId = textField(body, "taskId");
+      if (!this.state.get<string>("taskConversations", taskId)) throw new Error("Unknown CodePat task");
+      this.state.put("taskStartNow", taskId, true);
+      return { taskId, startsNow: true };
+    }
     if (action === "task-runtime") {
       if (!job.taskId) throw new Error("No task in this request");
       const operation = textField(body, "operation");

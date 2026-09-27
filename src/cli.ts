@@ -9,6 +9,7 @@ if (action === "--help" || action === "help" || !action) {
   console.log(`CodePat (Node 24)
 status | repositories | instances | projects | project <uuid>
 task-status [task-id]
+task-start-now <task-id>
 task-continue <task-id> --file <comment.md>
 task-upload --file <path> [--name <filename>]
 task-create --distinct --project <uuid> --name <name> --description-file <path>
@@ -54,6 +55,9 @@ switch (action) {
     break;
   case "task-continue":
     body = { jobId, taskId: args[0], text: readFileSync(option("--file"), "utf8") };
+    break;
+  case "task-start-now":
+    body = { jobId, taskId: args[0] };
     break;
   case "tasks":
     body = { jobId, projectId: option("--project") };

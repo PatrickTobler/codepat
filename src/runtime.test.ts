@@ -146,6 +146,98 @@ test("runner heartbeats are tracked per slot", async () => {
   }
 });
 
+function capped(f: ReturnType<typeof fixture>, maxActiveTasks = 2) {
+  return new Runtime(f.state, f.herdr, { ...f.config, runnerSlots: 8, maxActiveTasks });
+}
+function liveAgent(f: ReturnType<typeof fixture>, taskId: string, conversationId: string) {
+  f.state.put("taskRuntimes", taskId, {
+    taskId, conversationId,
+    resources: [{ kind: "herdr", resourceId: `w1:${taskId}`, role: "worker", status: "working", attachedAt: Date.now() }],
+  });
+}
+
+test("new tasks wait oldest first while the active-task limit is reached", async () => {
+  const f = fixture();
+  try {
+    const runtime = capped(f);
+    const one = taskJob(f, "task-1").job;
+    const two = taskJob(f, "task-2").job;
+    const three = taskJob(f, "task-3").job;
+    const four = taskJob(f, "task-4").job;
+    assert.equal(runtime.nextJob("slot-0-a", 1)!.job.id, one.id);
+    assert.equal(runtime.nextJob("slot-1-b", 1)!.job.id, two.id);
+    assert.equal(runtime.nextJob("slot-2-c", 1), null);
+    await runtime.control("reply", { jobId: one.id, attempt: 0, text: "done" });
+    assert.equal(runtime.nextJob("slot-0-a", 1)!.job.id, three.id);
+    assert.equal(runtime.nextJob("slot-3-d", 1), null);
+    assert.equal(runtime.job(four.id).status, "queued");
+  } finally {
+    f.close();
+  }
+});
+
+test("follow-ups on active tasks bypass the limit and paused tasks free their slot", async () => {
+  const f = fixture();
+  try {
+    const runtime = capped(f);
+    const { job: one, conversation: c1 } = taskJob(f, "task-1");
+    const { job: two, conversation: c2 } = taskJob(f, "task-2");
+    runtime.nextJob("slot-0-a", 1);
+    runtime.nextJob("slot-1-b", 1);
+    liveAgent(f, "task-1", c1.id);
+    liveAgent(f, "task-2", c2.id);
+    await runtime.control("reply", { jobId: one.id, attempt: 0, text: "worker started" });
+    await runtime.control("reply", { jobId: two.id, attempt: 0, text: "worker started" });
+    const waiting = taskJob(f, "task-3").job;
+    const followUp = f.state.enqueue({ conversationId: c1.id, kind: "task", taskId: "task-1", input: "worker idle" });
+    assert.equal(runtime.nextJob("slot-0-a", 1)!.job.id, followUp.id);
+    assert.equal(runtime.nextJob("slot-1-b", 1), null);
+    runtime.reportTask("task-2", "Which audience?", "INPUT_REQUIRED");
+    assert.equal(runtime.nextJob("slot-1-b", 1)!.job.id, waiting.id);
+  } finally {
+    f.close();
+  }
+});
+
+test("a chat can start a waiting task early", async () => {
+  const f = fixture();
+  try {
+    const runtime = capped(f, 1);
+    taskJob(f, "task-1");
+    const waiting = taskJob(f, "task-2").job;
+    runtime.nextJob("slot-0-a", 1);
+    assert.equal(runtime.nextJob("slot-1-b", 1), null);
+    const c = runtime.createConversation("alice", {});
+    const chat = runtime.createResponse("alice", c.id, "start task-2 now");
+    runtime.nextJob("slot-2-c", 1);
+    await runtime.control("task-start-now", { jobId: chat.id, taskId: "task-2" });
+    assert.equal(runtime.nextJob("slot-1-b", 1)!.job.id, waiting.id);
+  } finally {
+    f.close();
+  }
+});
+
+test("each waiting task gets one queue notice with its place in line", () => {
+  const f = fixture();
+  try {
+    const runtime = capped(f, 1);
+    taskJob(f, "task-1");
+    taskJob(f, "task-2");
+    taskJob(f, "task-3");
+    runtime.nextJob("slot-0-a", 1);
+    runtime.noticeWaitingTasks();
+    runtime.noticeWaitingTasks();
+    const notices = f.state.all<Outbox>("outbox").map((item) => [item.path, String(item.body.comment)]);
+    assert.equal(notices.length, 2);
+    assert.match(notices[0][0], /task-2/);
+    assert.match(notices[0][1], /0 tasks are ahead/);
+    assert.match(notices[1][0], /task-3/);
+    assert.match(notices[1][1], /1 task is ahead/);
+  } finally {
+    f.close();
+  }
+});
+
 test("chat idempotency persists across restart and isolates keys by conversation", () => {
   const f = fixture();
   try {
