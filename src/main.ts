@@ -32,6 +32,9 @@ if (!Number.isInteger(port) || port < 1 || port > 65535)
 const runnerSlots = Number(process.env.CODEPAT_RUNNERS ?? "3");
 if (!Number.isInteger(runnerSlots) || runnerSlots < 1 || runnerSlots > 8)
   throw new Error("CODEPAT_RUNNERS must be an integer from 1 to 8");
+const maxActiveTasks = Number(process.env.CODEPAT_MAX_ACTIVE_TASKS ?? "4");
+if (!Number.isInteger(maxActiveTasks) || maxActiveTasks < 1 || maxActiveTasks > 50)
+  throw new Error("CODEPAT_MAX_ACTIVE_TASKS must be an integer from 1 to 50");
 const state = new State(join(dataDir, "state.sqlite"));
 const herdr = new Herdr();
 const repositories = record(
@@ -50,6 +53,7 @@ const runtime = new Runtime(state, herdr, {
   coworkerId: process.env.CODEPAT_COWORKER_ID,
   repositories: repositories as Record<string, string>,
   runnerSlots,
+  maxActiveTasks,
 });
 const server = createCodePatServer({
   organizationId: process.env.CODEPAT_ORGANIZATION_ID ?? "",
@@ -194,6 +198,7 @@ function loop(ms: number, action: () => Promise<void>): void {
 loop(5000, () => runtime.pollTasks());
 loop(5000, () => runtime.pollTaskRuntimes());
 loop(5000, () => runtime.flushOutbox());
+loop(5000, async () => runtime.noticeWaitingTasks());
 loop(60_000, () => runtime.reconcileTasks());
 loop(300_000, async () => {
   const storage = runtime.storageHealth();
