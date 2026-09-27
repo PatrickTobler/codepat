@@ -53,6 +53,8 @@ const INERT_TASK_STATUSES = [
   "FAILED",
   "CANCELED",
 ];
+// Task board comments must stay readable at a glance; detail belongs in uploaded files.
+const TASK_COMMENT_MAX_CHARS = 1200;
 // A task in one of these states gives its active-task slot to the next waiting task.
 const PAUSED_TASK_STATUSES = [
   "INPUT_REQUIRED",
@@ -1308,6 +1310,8 @@ export class Runtime implements ChatService {
       if (!job.taskId) throw new Error("No task in this request");
       const content = textField(body, "text");
       if (hasLocalLinks(content)) throw new ControlConflict("Upload local evidence with task-upload and use its fileUrl before reporting links");
+      if (content.length > TASK_COMMENT_MAX_CHARS)
+        throw new ControlConflict(`Task comments must stay under ${TASK_COMMENT_MAX_CHARS} characters. Lead with the status and what the user must do, keep a few short bullets, and upload longer detail as a file.`);
       const status = typeof body.status === "string" ? body.status : undefined;
       const receipt = createHash("sha256").update(JSON.stringify([job.id, job.conversationId, job.taskId, status ?? null, content])).digest("hex");
       const previous = this.state.get<{ notificationId: string }>("taskReportReceipts", receipt);
