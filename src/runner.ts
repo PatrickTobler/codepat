@@ -20,7 +20,8 @@ const exec = promisify(execFile);
 process.env.XDG_RUNTIME_DIR ??= `/run/user/${userInfo().uid}`;
 process.env.DBUS_SESSION_BUS_ADDRESS ??= `unix:path=${process.env.XDG_RUNTIME_DIR}/bus`;
 const herdr = new Herdr();
-const runnerId = randomUUID();
+const slot = Number(process.env.CODEPAT_RUNNER_SLOT ?? "0");
+const runnerId = `slot-${slot}-${randomUUID()}`;
 const timeouts = turnTimeouts();
 const pane = process.env.HERDR_PANE_ID;
 if (!pane || process.env.HERDR_ENV !== "1")
@@ -137,9 +138,9 @@ async function report(state: string): Promise<void> {
   }
 }
 await report("idle");
-await herdr.call(["pane", "rename", pane, "CodePat"]);
+await herdr.call(["pane", "rename", pane, slot ? `CodePat ${slot + 1}` : "CodePat"]);
 const heartbeat = setInterval(() => {
-  void control("heartbeat").catch(() => undefined);
+  void control("heartbeat", { runnerId }).catch(() => undefined);
 }, 3000);
 console.log("CodePat is online.");
 while (!stopping) {

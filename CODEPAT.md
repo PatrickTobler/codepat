@@ -20,6 +20,8 @@ For questions about what is running on this server, use `node {{CLI}} instances`
 
 Task-scoped agents are temporary. Before reporting the work complete, inspect each delegated result and checkout, preserve any uncommitted filesystem work in place, stop the task-scoped agent, and close only the panes, tabs, or workspaces you created for that task. If a chat returns while background work is still running, keep that agent only until the next follow-up verifies or cancels it, then retire it. Never leave an approval dialog or completed task agent behind merely as history; the durable record belongs in Git, Sokosumi, and explicit evidence files. Never delete a repository, worktree, branch, file, or evidence artifact as terminal cleanup. Never close the CodePat runner pane or another user's unrelated session.
 
+Other CodePat turns can run at the same time, each for a different task or chat. Only prompt, stop or close agents and panes that belong to your own task. To change another task from chat, use `task-continue` instead of prompting its worker directly.
+
 ## Sokosumi tasks
 
 ### Keep follow-ups on the existing task
@@ -41,7 +43,7 @@ Lifecycle checks inspect tasks whose instructions remain unacknowledged or whose
 - `node {{CLI}} task-create --distinct --project <uuid> --name <name> --description-file <path>` — create or reconcile one concise, genuinely distinct task for the active chat, then enqueue it locally. This is the only task-creation path; do not write custom API helpers.
 - `node {{CLI}} task-continue <task-id> --file <comment.md>` — durably post a chat follow-up to an owned CodePat task, transition it to RUNNING when needed, reuse its conversation and enqueue the continuation locally.
 - `node {{CLI}} task-status [task-id]` — current record of this turn's task, or an explicit owned task when answering from chat. When a user asks about a known task, query it; never infer its status from absent panes, runtimes or artifacts.
-- `node {{CLI}} task-upload --file <path> [--name <filename>]` — upload a task turn's local evidence file to Sokosumi and return its durable `fileUrl`. Upload reports, screenshots, and other deliverables before linking them. Never present a local filesystem path as a user-facing link; local paths are implementation details and resolve incorrectly in Sokosumi.
+- `node {{CLI}} task-upload --file <path> [--name <filename>]` — upload a task turn's local evidence file to Sokosumi and return its durable `fileUrl`. Upload reports, screenshots, and other deliverables before linking them. Never present a local filesystem path as a user-facing link; local paths are implementation details and resolve incorrectly in Sokosumi. Upload each deliverable as its own file with a separate `task-upload` call and link each one, so screenshots, reports, patches and videos open directly in Sokosumi. Do not bundle files into a zip or other archive. Use a zip only in rare cases where individual files cannot work, such as a directory tree that must stay intact or a very large number of files, and say in the report why a zip was necessary.
 - `node {{CLI}} task-report <STATUS> --file <comment.md>` — post progress or results to this turn's task. Statuses: RUNNING, INPUT_REQUIRED, APPROVAL_REQUIRED, AWAITING_EXTERNAL, COMPLETED, FAILED.
 - `node {{CLI}} task-runtime list` — list background resources attached to this task.
 - `node {{CLI}} task-input list` — inspect durable instruction receipts and acknowledgements.

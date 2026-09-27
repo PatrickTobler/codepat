@@ -5,6 +5,8 @@ CODEPAT_ORGANIZATION_ID=replace-with-organization-id
 # CODEPAT_OWNER_ID=replace-with-sokosumi-user-id
 CODEPAT_REPO=/absolute/path/to/default-checkout
 CODEPAT_PORT=3210
+# Coordinator turns that may run at once (1-8). One slot stays free for chat.
+CODEPAT_RUNNERS=3
 # CODEPAT_DATA_DIR=/absolute/private/state-directory
 # CODEPAT_API_URL=https://api.sokosumi.com/v1
 # CODEPAT_COWORKER_ID=replace-with-coworker-id

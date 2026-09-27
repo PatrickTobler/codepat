@@ -28,6 +28,7 @@ export interface RuntimeConfig {
   apiKey?: string;
   coworkerId?: string;
   repositories?: Record<string, string>;
+  runnerSlots?: number;
 }
 interface Scope {
   id: string;
@@ -130,6 +131,12 @@ const TASK_FILE_TYPES: Record<string, string> = {
   ".zip": "application/zip",
 };
 
+// Runner ids look like `slot-<n>-<uuid>`; legacy single-runner ids count as slot 0.
+export function runnerSlot(runnerId: unknown): number {
+  const match = /^slot-(\d+)-/.exec(String(runnerId ?? ""));
+  return match ? Number(match[1]) : 0;
+}
+
 export class Runtime implements ChatService {
   state: State;
   herdr: HerdrPort;
@@ -137,7 +144,18 @@ export class Runtime implements ChatService {
   pollError?: string;
   reconciliationError?: string;
   runnerAt = 0;
+  private runnerSeen = new Map<number, number>();
   private startedAt = Date.now();
+  get runnerSlots(): number {
+    return this.config.runnerSlots ?? 1;
+  }
+  runnerSeenAt(slot: number): number {
+    return this.runnerSeen.get(slot) ?? 0;
+  }
+  private markRunner(runnerId: unknown): void {
+    this.runnerAt = Date.now();
+    this.runnerSeen.set(runnerSlot(runnerId), this.runnerAt);
+  }
   storageHealth(): { availableBytes: number; totalBytes: number; low: boolean } {
     const info = statfsSync(this.config.dataDir);
     const availableBytes = info.bavail * info.bsize;
@@ -293,19 +311,22 @@ export class Runtime implements ChatService {
     threadId?: string;
     context: unknown;
   } | null {
-    this.runnerAt = Date.now();
-    const active = this.state
-      .all<Job>("jobs")
-      .find((job) => job.status === "in_progress");
-    if (
-      active &&
-      (!runnerId || this.state.get<string>("claims", active.id) !== runnerId)
-    )
-      return null;
-    const queued = this.state
-      .all<Job>("jobs")
-      .filter((job) => job.status === "queued");
-    const job = active ?? queued.find((job) => job.kind === "chat") ?? queued[0];
+    this.markRunner(runnerId);
+    const jobs = this.state.all<Job>("jobs");
+    const active = jobs.filter((job) => job.status === "in_progress");
+    // A runner resumes only its own claim and never takes another runner's.
+    const mine = runnerId
+      ? active.find((job) => this.state.get<string>("claims", job.id) === runnerId)
+      : undefined;
+    if (!mine && active.length >= this.runnerSlots) return null;
+    // One turn per conversation and task: those turns share a thread and a checkout.
+    const busy = new Set(active.flatMap((job) => [job.conversationId, job.taskId ?? ""]));
+    const queued = jobs.filter((job) => job.status === "queued" &&
+      !busy.has(job.conversationId) && !(job.taskId && busy.has(job.taskId)));
+    // Task turns leave one slot free so chat replies never wait behind them.
+    const taskRoom = active.length < Math.max(1, this.runnerSlots - 1);
+    const job = mine ?? queued.find((job) => job.kind === "chat") ??
+      (taskRoom ? queued.find((job) => job.kind === "task") : undefined);
     if (!job) return null;
     // Prepare credentials before marking a claim; an I/O failure leaves the job queued.
     let jobConfig = this.state.get<string>("jobConfigs", job.id);
@@ -313,7 +334,7 @@ export class Runtime implements ChatService {
     this.state.transaction(() => {
       job.status = "in_progress";
       job.submittedAt ??= Date.now();
-      if (!active) { job.reservationProtocol = protocol; job.turnStarted = false; }
+      if (job !== mine) { job.reservationProtocol = protocol; job.turnStarted = false; }
       this.state.put("jobs", job.id, job);
       this.state.put("jobConfigs", job.id, jobConfig);
       this.state.put("claims", job.id, runnerId ?? "test");
@@ -1065,7 +1086,7 @@ export class Runtime implements ChatService {
   ): Promise<unknown> {
     if (action === "next") return this.nextJob(textField(body, "runnerId"), body.protocol === 1 ? 1 : undefined);
     if (action === "heartbeat") {
-      this.runnerAt = Date.now();
+      this.markRunner(body.runnerId);
       return { ok: true };
     }
     if (action === "status")
