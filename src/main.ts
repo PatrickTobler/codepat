@@ -115,14 +115,14 @@ async function ensureRunner(slot: number): Promise<void> {
     state.put("meta", "workspace", workspace);
     state.put("meta", paneKey(slot), paneFrom(created));
   }
+  // A slot added after install has no pane yet; it gets a new tab below.
   let pane = state.get<string>("meta", paneKey(slot));
-  if (!pane) throw new Error("Missing CodePat runner pane");
   // A stale heartbeat is not permission to launch a second runner in a busy pane.
   const panes = await herdr.call(["pane", "list", "--workspace", workspace]);
   const current = Array.isArray(panes.panes)
     ? panes.panes.map(record).find((item) => item.pane_id === pane)
     : undefined;
-  if (!current) {
+  if (!current || !pane) {
     const created = await herdr.call([
       "tab",
       "create",
