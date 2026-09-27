@@ -37,6 +37,10 @@ export function claudeArgs(options: { conversationId?: string; cwd: string }): s
       })();
   return ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions", ...session];
 }
+// Compacts a conversation's Claude session so later turns stay fast.
+export function claudeCompactArgs(conversationId: string): string[] {
+  return ["-p", "--output-format", "json", "--permission-mode", "bypassPermissions", "--resume", claudeSessionId(conversationId), "/compact"];
+}
 export const FALLBACK_NOTE =
   "Codex is unavailable for this turn, so you are running as Claude Code in its place. Earlier Codex conversation history is not available to you. Inspect the live repository, task and Herdr state before acting, and do not assume earlier work completed.\n";
 
@@ -48,8 +52,14 @@ export class ClaudeTurn {
   text?: string;
   failed = false;
   completed = false;
+  // Tokens the session sent with its latest model call, i.e. its current context size.
+  contextTokens = 0;
   ingest(value: unknown): string | undefined {
     const event = object(value);
+    const usage = object(object(event.message).usage);
+    if (event.type === "assistant" && Object.keys(usage).length)
+      this.contextTokens = ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"]
+        .reduce((sum, key) => sum + (Number(usage[key]) || 0), 0);
     if (event.type === "result") {
       this.completed = true;
       this.failed = event.is_error === true || event.subtype !== "success";

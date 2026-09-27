@@ -9,6 +9,8 @@ CODEPAT_PORT=3210
 CODEPAT_RUNNERS=3
 # Tasks that may be active at once (1-50). New tasks beyond it wait, oldest first.
 CODEPAT_MAX_ACTIVE_TASKS=4
+# Coordinator sessions above this many context tokens are compacted (Claude after the reply, Codex before its next turn).
+CODEPAT_COMPACT_TOKENS=80000
 # CODEPAT_DATA_DIR=/absolute/private/state-directory
 # CODEPAT_API_URL=https://api.sokosumi.com/v1
 # CODEPAT_COWORKER_ID=replace-with-coworker-id
