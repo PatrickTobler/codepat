@@ -75,6 +75,77 @@ const assignedTask = {
   organizationId: "org",
 };
 
+function parallel(f: ReturnType<typeof fixture>, runnerSlots = 3) {
+  return new Runtime(f.state, f.herdr, { ...f.config, runnerSlots });
+}
+
+test("parallel runners take jobs from different tasks and chats at once", () => {
+  const f = fixture();
+  try {
+    const runtime = parallel(f);
+    const one = taskJob(f, "task-1").job;
+    const c = runtime.createConversation("alice", {});
+    const chat = runtime.createResponse("alice", c.id, "status?");
+    assert.equal(runtime.nextJob("slot-0-a", 1)!.job.id, chat.id);
+    assert.equal(runtime.nextJob("slot-1-b", 1)!.job.id, one.id);
+    assert.equal(runtime.nextJob("slot-0-a", 1)!.job.id, chat.id);
+    assert.equal(runtime.nextJob("slot-1-b", 1)!.job.id, one.id);
+  } finally {
+    f.close();
+  }
+});
+
+test("parallel runners never run two turns for the same task or conversation", () => {
+  const f = fixture();
+  try {
+    const runtime = parallel(f);
+    const { job: first, conversation } = taskJob(f, "task-1");
+    f.state.enqueue({ conversationId: conversation.id, kind: "task", taskId: "task-1", input: "second event" });
+    const c = runtime.createConversation("alice", {});
+    const chat = runtime.createResponse("alice", c.id, "one");
+    runtime.createResponse("alice", c.id, "two");
+    assert.equal(runtime.nextJob("slot-0-a", 1)!.job.id, chat.id);
+    assert.equal(runtime.nextJob("slot-1-b", 1)!.job.id, first.id);
+    assert.equal(runtime.nextJob("slot-2-c", 1), null);
+  } finally {
+    f.close();
+  }
+});
+
+test("task turns keep one runner slot free for chat", () => {
+  const f = fixture();
+  try {
+    const runtime = parallel(f);
+    taskJob(f, "task-1");
+    taskJob(f, "task-2");
+    taskJob(f, "task-3");
+    runtime.nextJob("slot-0-a", 1);
+    runtime.nextJob("slot-1-b", 1);
+    assert.equal(runtime.nextJob("slot-2-c", 1), null);
+    const c = runtime.createConversation("alice", {});
+    const chat = runtime.createResponse("alice", c.id, "are tasks stuck?");
+    assert.equal(runtime.nextJob("slot-2-c", 1)!.job.id, chat.id);
+    assert.equal(runtime.nextJob("slot-3-d", 1), null);
+  } finally {
+    f.close();
+  }
+});
+
+test("runner heartbeats are tracked per slot", async () => {
+  const f = fixture();
+  try {
+    const runtime = parallel(f);
+    assert.equal(runtime.runnerSeenAt(1), 0);
+    await runtime.control("heartbeat", { runnerId: "slot-1-b" });
+    assert.ok(runtime.runnerSeenAt(1) > 0);
+    assert.equal(runtime.runnerSeenAt(2), 0);
+    await runtime.control("heartbeat", {});
+    assert.ok(runtime.runnerSeenAt(0) > 0);
+  } finally {
+    f.close();
+  }
+});
+
 test("chat idempotency persists across restart and isolates keys by conversation", () => {
   const f = fixture();
   try {
