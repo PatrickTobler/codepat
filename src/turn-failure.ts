@@ -26,7 +26,9 @@ function classify(error: Record<string, unknown>): string {
   if (typeof code === "string" && Object.hasOwn(codes, code)) return codes[code];
   // exec JSONL can expose only a message, unlike the richer session record.
   // Match narrow known diagnostic phrases; do not forward any of that message.
-  const message = typeof error.message === "string" ? error.message.slice(0, 4096) : "";
+  // Codex prefixes errors raised while it compacts a long thread before the turn.
+  const message = (typeof error.message === "string" ? error.message.slice(0, 4096) : "")
+    .replace(/^Error running remote compact task: /i, "");
   if (/^This content was flagged for possible cybersecurity risk\./i.test(message)) return "provider_policy";
   if (/^(You've hit your usage limit|You have exceeded your usage limit)\b/i.test(message)) return "provider_usage_limit";
   if (/^Rate limit (reached|exceeded)\b/i.test(message)) return "provider_rate_limit";
