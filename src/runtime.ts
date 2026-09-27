@@ -157,6 +157,8 @@ export class Runtime implements ChatService {
   reconciliationError?: string;
   runnerAt = 0;
   private runnerSeen = new Map<number, number>();
+  // Conversations whose agent session is compacting; expiry covers a runner that died mid-compaction.
+  private compacting = new Map<string, number>();
   private startedAt = Date.now();
   get runnerSlots(): number {
     return this.config.runnerSlots ?? 1;
@@ -368,6 +370,9 @@ export class Runtime implements ChatService {
     if (!mine && active.length >= this.runnerSlots) return null;
     // One turn per conversation and task: those turns share a thread and a checkout.
     const busy = new Set(active.flatMap((job) => [job.conversationId, job.taskId ?? ""]));
+    for (const [conversationId, until] of this.compacting)
+      if (until > Date.now()) busy.add(conversationId);
+      else this.compacting.delete(conversationId);
     const queued = jobs.filter((job) => job.status === "queued" &&
       !busy.has(job.conversationId) && !(job.taskId && busy.has(job.taskId)));
     // Task turns leave one slot free so chat replies never wait behind them.
@@ -1141,6 +1146,14 @@ export class Runtime implements ChatService {
     if (action === "next") return this.nextJob(textField(body, "runnerId"), body.protocol === 1 ? 1 : undefined);
     if (action === "heartbeat") {
       this.markRunner(body.runnerId);
+      return { ok: true };
+    }
+    if (action === "compact-begin") {
+      this.compacting.set(textField(body, "conversationId"), Date.now() + 300_000);
+      return { ok: true };
+    }
+    if (action === "compact-end") {
+      this.compacting.delete(textField(body, "conversationId"));
       return { ok: true };
     }
     if (action === "status")

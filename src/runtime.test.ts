@@ -238,6 +238,21 @@ test("each waiting task gets one queue notice with its place in line", () => {
   }
 });
 
+test("a conversation waits while its session compacts", async () => {
+  const f = fixture();
+  try {
+    const runtime = new Runtime(f.state, f.herdr, { ...f.config, runnerSlots: 3 });
+    const c = runtime.createConversation("alice", {});
+    const chat = runtime.createResponse("alice", c.id, "merge it");
+    await runtime.control("compact-begin", { conversationId: c.id });
+    assert.equal(runtime.nextJob("slot-0-a", 1), null);
+    await runtime.control("compact-end", { conversationId: c.id });
+    assert.equal(runtime.nextJob("slot-0-a", 1)!.job.id, chat.id);
+  } finally {
+    f.close();
+  }
+});
+
 test("chat idempotency persists across restart and isolates keys by conversation", () => {
   const f = fixture();
   try {

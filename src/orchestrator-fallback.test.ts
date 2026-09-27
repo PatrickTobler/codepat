@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { ClaudeTurn, claudeArgs, claudeSessionId, shouldFallBack } from "./orchestrator-fallback.ts";
+import { ClaudeTurn, claudeArgs, claudeCompactArgs, claudeSessionId, shouldFallBack } from "./orchestrator-fallback.ts";
 
 test("falls back only when Codex was unavailable before acting", () => {
   for (const kind of ["provider_usage_limit", "provider_auth", "provider_rate_limit", "provider_connection", "provider_context_limit"]) {
@@ -57,4 +57,13 @@ test("only a successful Claude result event produces the answer", () => {
   const maxTurns = new ClaudeTurn();
   maxTurns.ingest({ type: "result", subtype: "error_max_turns", is_error: false });
   assert.equal(maxTurns.failed, true);
+});
+
+test("Claude turns report their latest context size and compact their own session", () => {
+  const turn = new ClaudeTurn();
+  turn.ingest({ type: "assistant", message: { usage: { input_tokens: 2, cache_read_input_tokens: 200_000, cache_creation_input_tokens: 4_000 }, content: [] } });
+  turn.ingest({ type: "assistant", message: { usage: { input_tokens: 5, cache_read_input_tokens: 90_000, cache_creation_input_tokens: 1_000 }, content: [] } });
+  assert.equal(turn.contextTokens, 91_005);
+  const args = claudeCompactArgs("conv_1");
+  assert.deepEqual(args.slice(-3), ["--resume", claudeSessionId("conv_1"), "/compact"]);
 });

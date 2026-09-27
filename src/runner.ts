@@ -1,5 +1,5 @@
 import { TurnFailure } from "./turn-failure.ts";
-import { ClaudeTurn, claudeArgs, FALLBACK_NOTE, shouldFallBack } from "./orchestrator-fallback.ts";
+import { ClaudeTurn, claudeArgs, claudeCompactArgs, FALLBACK_NOTE, shouldFallBack } from "./orchestrator-fallback.ts";
 import { ClaudeProgress, CodexProgress, ProgressJournal } from "./progress.ts";
 import { turnTimeouts, turnDeadlines, failureKind, failureText, saveReceipt, type TurnReceipt } from "./recovery.ts";
 import { execFile, spawn } from "node:child_process";
@@ -23,6 +23,9 @@ const herdr = new Herdr();
 const slot = Number(process.env.CODEPAT_RUNNER_SLOT ?? "0");
 const runnerId = `slot-${slot}-${randomUUID()}`;
 const timeouts = turnTimeouts();
+// Sessions above this many context tokens are compacted after the reply is delivered.
+const compactTokens = Number(process.env.CODEPAT_COMPACT_TOKENS ?? "80000");
+if (!Number.isInteger(compactTokens) || compactTokens < 20_000) throw new Error("CODEPAT_COMPACT_TOKENS must be an integer of at least 20000");
 const pane = process.env.HERDR_PANE_ID;
 if (!pane || process.env.HERDR_ENV !== "1")
   throw new Error("CodePat runner must run in a Herdr pane");
@@ -118,6 +121,18 @@ function runUnit(
     child.stdin!.end(input);
   });
 }
+// Runs after the reply is delivered; the bridge keeps the conversation's next turn waiting meanwhile.
+async function compactClaudeSession(conversationId: string, tokens: number): Promise<void> {
+  try {
+    await control("compact-begin", { conversationId });
+    console.log(`Compacting the Claude session (${tokens} context tokens).`);
+    await exec("claude", claudeCompactArgs(conversationId), { cwd: process.cwd(), timeout: 240_000 });
+  } catch {
+    console.error("Session compaction failed; the next turn uses the full session.");
+  } finally {
+    await control("compact-end", { conversationId }).catch(() => undefined);
+  }
+}
 async function report(state: string): Promise<void> {
   try {
     await herdr.call([
@@ -175,6 +190,8 @@ while (!stopping) {
       'approval_policy="never"',
       "-c",
       'sandbox_mode="danger-full-access"',
+      "-c",
+      `model_auto_compact_token_limit=${compactTokens}`,
       ...(threadId ? ["resume", threadId] : []),
       "--skip-git-repo-check",
       "--json",
@@ -266,6 +283,7 @@ while (!stopping) {
       /* failed process may not write a result */
     }
     let error = protocolFailure.resolve(failureKind(unitResult, exitCode, timedOut, stopping, Boolean(text.trim())));
+    let claudeContext = 0;
     if (!stopping && shouldFallBack(error, codexActed)) {
       // Same unit name, so the supervisor's liveness check still covers this turn.
       console.log(`Codex unavailable (${error}); handling ${id} with Claude Code.`);
@@ -302,6 +320,7 @@ while (!stopping) {
         turnSettled = true;
       }
       text = claude.text ?? "";
+      claudeContext = claude.contextTokens;
       const processFailure = failureKind(unitResult, exitCode, timedOut, stopping, Boolean(text.trim()));
       error = processFailure === "turn_timeout" || processFailure === "turn_interrupted" ? processFailure
         : processFailure || claude.failed ? "fallback_failed" : undefined;
@@ -331,6 +350,8 @@ while (!stopping) {
       }
     }
     if (!delivered) break;
+    if (claudeContext > compactTokens && typeof job.conversationId === "string")
+      await compactClaudeSession(job.conversationId, claudeContext);
     activeJob = undefined;
     await unlink(output).catch(() => undefined);
     await unlink(completionPath).catch(() => undefined);
