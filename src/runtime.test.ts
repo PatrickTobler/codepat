@@ -541,6 +541,17 @@ test("pending instructions survive failed turns and completion requires a dispos
   } finally { f.close(); }
 });
 
+test("long task comments are rejected with guidance", async () => {
+  const f = fixture();
+  try {
+    const { job } = taskJob(f);
+    f.runtime.api = async () => ({ data: assignedTask });
+    f.runtime.nextJob("runner", 1);
+    await assert.rejects(f.runtime.control("task-report", { jobId: job.id, status: "RUNNING", text: "x".repeat(1201) }), /under 1200 characters/);
+    await f.runtime.control("task-report", { jobId: job.id, status: "RUNNING", text: "PR open. Nothing needed from you." });
+  } finally { f.close(); }
+});
+
 test("completion is rejected while a worker is still attached", async () => {
   const f = fixture();
   try {
