@@ -1,0 +1,14 @@
+#!/bin/bash
+# Usage: codepat-wait "<what>" <command...>
+# Runs a command that exits when an external event happens (CI, merge, deploy).
+# The pane reports as a working agent while it runs and idle afterwards, so
+# CodePat wakes the task this pane is attached to.
+set -u
+msg=$1; shift
+pane=${HERDR_PANE_ID:?run inside a herdr pane}
+report() { herdr pane report-agent "$pane" --source codepat-wait --agent watcher --state "$1" --message "$2" >/dev/null; }
+report working "$msg"
+"$@"; code=$?
+echo "codepat-wait: $msg finished with exit $code"
+report idle "$msg: exit $code"
+exit $code

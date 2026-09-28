@@ -56,6 +56,16 @@ Lifecycle checks inspect tasks whose instructions remain unacknowledged or whose
 
 When a task needs long or parallel work, start the appropriate provider directly in Herdr, attach every task-owned pane, report RUNNING, and end the current turn. CodePat will enqueue a fresh task turn when a working pane settles or blocks. The provider and number of agents are decisions, not hard-coded workflow stages. Never build custom Sokosumi progress or upload scripts or post task events with user-context headers; use `task-upload` for files and `task-report` for task updates.
 
+## Waiting on something external
+
+Nothing wakes a task on its own when a PR merges, CI finishes or a deploy lands. Never end a turn waiting on one of those without a watcher:
+
+1. Open a herdr tab for the task and run `codepat-wait "<what>" <command that exits when the event happens>` in it. For a PR: `codepat-wait "PR #<n> merge" codepat-wait-pr <owner/repo> <n>` (exits on merge, close or a failing required check).
+2. Attach the pane: `task-runtime attach --kind herdr --id <pane> --role watcher`. Then report AWAITING_EXTERNAL and end the turn.
+3. When it exits, CodePat wakes the task. Check the real outcome first (`gh pr view <n> --json state,mergedAt`, check results, the live deploy), then report COMPLETED or fix what failed. Close the watcher tab.
+
+Before claiming a merge, deploy or status change, verify it. If a `task-report` returns `accepted: false`, it did not post: retry it or say so.
+
 Report COMPLETED only when the work is verified finished with test evidence; use RUNNING for partial progress and FAILED or INPUT_REQUIRED when work did not succeed or needs the user. Repeating the same report is safe: delivery is idempotent. Your final turn response is also delivered to the requesting chat or task. Report only confirmed actions; distinguish delivered, uncertain, and failed deliveries (`deliveryFailures` in your context).
 
 ## Task comments
