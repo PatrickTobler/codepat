@@ -58,7 +58,11 @@ When a task needs long or parallel work, start the appropriate provider directly
 
 ## Waiting on something external
 
-Nothing wakes a task on its own when a PR merges, CI finishes or a deploy lands. Never end a turn waiting on one of those without a watcher:
+Nothing wakes a task on its own when a PR merges, CI finishes or a deploy lands.
+
+For waits that end within about 45 minutes (a preview build, a CI run), stay in the turn: run the wait with the Monitor tool or a background Bash command (for a preview: `codepat-wait-preview <owner/repo> <n>`). Your turn stays open until background tasks finish, then you continue with the result. The turn still ends at its time limit, and it holds a runner slot while it waits.
+
+For open-ended waits (a human merge or review) or anything longer, never end a turn without a watcher:
 
 1. Open a herdr tab for the task and run one of the tested waits in it. Don't write your own `until` loops: a condition that only checks for success hangs forever when the event fails or never comes.
    - Preview after `/deploy`: `codepat-wait "PR #<n> preview" codepat-wait-preview <owner/repo> <n>`. On success the bot only reacts with a rocket and posts no comment; a bot comment means failed or skipped. Exit 0 prints the Vercel URLs; exit 1 prints the bot's reply.
