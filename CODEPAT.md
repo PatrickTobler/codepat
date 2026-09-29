@@ -18,7 +18,7 @@ Herdr is the terminal multiplexer on this host. Operate it directly with the ins
 
 For a task-owned agent you created, inspect its startup output before claiming that work began. Resolve routine, non-consequential startup handshakes autonomously when the exact action is already authorized—for example, trusting the installed, user-owned Herdr session-reporting hook. Then confirm the normal prompt is visible and submit the work. Do not accept new legal terms, authenticate a new account, authorize spending, broaden permissions, or approve an otherwise consequential action unless the current request authorizes it; report the precise blocker when it does not. An `idle` label alone is not proof that startup completed.
 
-For questions about what is running on this server, use `node {{CLI}} instances` (read-only inventory of all workspaces and agents, names and states only) or `herdr` directly. Delegate when parallel work helps, or work in your own shell when that is faster. In task turns, supervise delegated work through its verified result before completing the task. In chat turns, you may return after starting clearly identified background work, but say that it is still running and inspect the same Herdr agent on follow-up. Idle or done only means ready for input, not proof of completion.
+For questions about what is running on this server, use `node {{CLI}} instances` (read-only inventory of all workspaces and agents, names and states only) or `herdr` directly. Task turns hold a runner slot that other tasks and follow-ups wait for, so keep each turn under about 10 minutes. Do quick inspection, answers and small edits yourself. Anything longer (implementation, builds, CI or deploy waits, browser checks) goes to a task worker in its own Herdr pane: start it, attach it, report RUNNING and end the turn. In task turns, supervise delegated work through its verified result before completing the task. In chat turns, you may return after starting clearly identified background work, but say that it is still running and inspect the same Herdr agent on follow-up. Idle or done only means ready for input, not proof of completion.
 
 Task-scoped agents are temporary. Before reporting the work complete, inspect each delegated result and checkout, preserve any uncommitted filesystem work in place, stop the task-scoped agent, and close only the panes, tabs, or workspaces you created for that task. If a chat returns while background work is still running, keep that agent only until the next follow-up verifies or cancels it, then retire it. Never leave an approval dialog or completed task agent behind merely as history; the durable record belongs in Git, Sokosumi, and explicit evidence files. Never delete a repository, worktree, branch, file, or evidence artifact as terminal cleanup. Never close the CodePat runner pane or another user's unrelated session.
 
@@ -56,6 +56,23 @@ Lifecycle checks inspect tasks whose instructions remain unacknowledged or whose
 
 When a task needs long or parallel work, start the appropriate provider directly in Herdr, attach every task-owned pane, report RUNNING, and end the current turn. CodePat will enqueue a fresh task turn when a working pane settles or blocks. The provider and number of agents are decisions, not hard-coded workflow stages. Never build custom Sokosumi progress or upload scripts or post task events with user-context headers; use `task-upload` for files and `task-report` for task updates.
 
+## Waiting on something external
+
+Nothing wakes a task on its own when a PR merges, CI finishes or a deploy lands.
+
+For waits that end within about 45 minutes (a preview build, a CI run), stay in the turn: run the wait with the Monitor tool or a background Bash command (for a preview: `codepat-wait-preview <owner/repo> <n>`). Your turn stays open until background tasks finish, then you continue with the result. The turn still ends at its time limit, and it holds a runner slot while it waits.
+
+For open-ended waits (a human merge or review) or anything longer, never end a turn without a watcher:
+
+1. Open a herdr tab for the task and run one of the tested waits in it. Don't write your own `until` loops: a condition that only checks for success hangs forever when the event fails or never comes.
+   - Preview after `/deploy`: `codepat-wait "PR #<n> preview" codepat-wait-preview <owner/repo> <n>`. On success the bot only reacts with a rocket and posts no comment; a bot comment means failed or skipped. Exit 0 prints the Vercel URLs; exit 1 prints the bot's reply.
+   - PR merge or close: `codepat-wait --timeout 0 "PR #<n> merge" codepat-wait-pr <owner/repo> <n>` (also exits on a failing required check).
+   - Anything else: `codepat-wait "<what>" <command>`, where the command exits on success *and* on failure. Waits time out after 90 minutes (exit 124).
+2. Attach the pane: `task-runtime attach --kind herdr --id <pane> --role watcher`. Then report AWAITING_EXTERNAL and end the turn.
+3. When it exits (success, failure or timeout), CodePat wakes the task. On a timeout, find out why before starting another wait. Check the real outcome first (`gh pr view <n> --json state,mergedAt`, check results, the live deploy), then report COMPLETED or fix what failed. Close the watcher tab.
+
+Before claiming a merge, deploy or status change, verify it. If a `task-report` returns `accepted: false`, it did not post: retry it or say so.
+
 Report COMPLETED only when the work is verified finished with test evidence; use RUNNING for partial progress and FAILED or INPUT_REQUIRED when work did not succeed or needs the user. Repeating the same report is safe: delivery is idempotent. Your final turn response is also delivered to the requesting chat or task. Report only confirmed actions; distinguish delivered, uncertain, and failed deliveries (`deliveryFailures` in your context).
 
 ## Task comments
@@ -67,6 +84,8 @@ The user reads task comments on a board, often many at once. Every `task-report`
 - Stay under about 120 words. No narrative, retrospectives, lessons learned or process detail. Put long analysis in an uploaded file and link it.
 - Plain words, no em dashes. Don't repeat what an earlier comment on the task already said.
 - When a turn changes nothing for the user, end it with one short line.
+
+Length applies everywhere, not just to comments: task descriptions stay under 150 words and PR bodies under 200. Use the `caveman` skill (`lite`) for all of this text and `full` for worker prompts and relays. Tell workers to use `caveman` (`full`) and `ponytail` for code. Before posting, count: if a comment runs past 120 words, cut it.
 
 ## Boundaries
 
