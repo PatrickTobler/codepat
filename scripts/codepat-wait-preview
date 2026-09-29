@@ -1,0 +1,25 @@
+#!/bin/bash
+# Usage: codepat-wait-preview <owner/repo> <pr-number>
+# Waits for the result of the latest /deploy comment on the PR.
+# Exit 0: deployed (bot reacted with a rocket). Exit 1: the bot replied instead
+# (deploy failed, no preview-relevant changes, bad command); its reply is printed.
+set -u
+repo=$1; pr=$2
+deploy=$(gh api "repos/$repo/issues/$pr/comments?per_page=100" --paginate \
+  --jq '.[]|select(.user.type!="Bot" and (.body|startswith("/deploy")))|[.id,.created_at]|@tsv' | tail -1)
+[ -z "$deploy" ] && { echo "No /deploy comment on PR #$pr. Comment /deploy <network> first."; exit 2; }
+id=${deploy%%$'\t'*}; at=${deploy##*$'\t'}
+echo "Waiting on /deploy comment $id ($at) for PR #$pr"
+while :; do
+  reply=$(gh api "repos/$repo/issues/$pr/comments?since=$at&per_page=100" \
+    --jq ".[]|select(.user.login==\"github-actions[bot]\" and .created_at>=\"$at\")|.body" 2>/dev/null)
+  [ -n "$reply" ] && { echo "Preview bot replied:"; echo "$reply"; exit 1; }
+  rocket=$(gh api "repos/$repo/issues/comments/$id/reactions" --jq '[.[]|select(.content=="rocket")]|length' 2>/dev/null)
+  if [ "${rocket:-0}" -gt 0 ]; then
+    echo "Preview deployed. Vercel statuses on the head commit:"
+    sha=$(gh pr view "$pr" --repo "$repo" --json headRefOid -q .headRefOid)
+    gh api "repos/$repo/commits/$sha/statuses" --jq '.[]|select(.context|startswith("Vercel"))|[.context,.state,.target_url]|@tsv' | sort -u
+    exit 0
+  fi
+  sleep 30
+done

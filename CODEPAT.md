@@ -60,9 +60,12 @@ When a task needs long or parallel work, start the appropriate provider directly
 
 Nothing wakes a task on its own when a PR merges, CI finishes or a deploy lands. Never end a turn waiting on one of those without a watcher:
 
-1. Open a herdr tab for the task and run `codepat-wait "<what>" <command that exits when the event happens>` in it. For a PR: `codepat-wait "PR #<n> merge" codepat-wait-pr <owner/repo> <n>` (exits on merge, close or a failing required check).
+1. Open a herdr tab for the task and run one of the tested waits in it. Don't write your own `until` loops: a condition that only checks for success hangs forever when the event fails or never comes.
+   - Preview after `/deploy`: `codepat-wait "PR #<n> preview" codepat-wait-preview <owner/repo> <n>`. On success the bot only reacts with a rocket and posts no comment; a bot comment means failed or skipped. Exit 0 prints the Vercel URLs; exit 1 prints the bot's reply.
+   - PR merge or close: `codepat-wait --timeout 0 "PR #<n> merge" codepat-wait-pr <owner/repo> <n>` (also exits on a failing required check).
+   - Anything else: `codepat-wait "<what>" <command>`, where the command exits on success *and* on failure. Waits time out after 90 minutes (exit 124).
 2. Attach the pane: `task-runtime attach --kind herdr --id <pane> --role watcher`. Then report AWAITING_EXTERNAL and end the turn.
-3. When it exits, CodePat wakes the task. Check the real outcome first (`gh pr view <n> --json state,mergedAt`, check results, the live deploy), then report COMPLETED or fix what failed. Close the watcher tab.
+3. When it exits (success, failure or timeout), CodePat wakes the task. On a timeout, find out why before starting another wait. Check the real outcome first (`gh pr view <n> --json state,mergedAt`, check results, the live deploy), then report COMPLETED or fix what failed. Close the watcher tab.
 
 Before claiming a merge, deploy or status change, verify it. If a `task-report` returns `accepted: false`, it did not post: retry it or say so.
 
