@@ -46,6 +46,8 @@ export interface CodePatServerOptions {
   organizationId: string;
   attachmentDirectory?: string;
   ownerId?: string;
+  // Secret first path segment for chat routes, so the public URL works as a capability.
+  pathSecret?: string;
   service: ChatService;
   controlToken: string;
   authorizeControl?: (
@@ -288,7 +290,12 @@ export function createCodePatServer(options: CodePatServerOptions) {
         );
     };
     try {
-      const path = new URL(req.url ?? "/", "http://localhost").pathname;
+      let path = new URL(req.url ?? "/", "http://localhost").pathname;
+      if (options.pathSecret && path !== "/health" && !path.startsWith("/control/")) {
+        const prefix = `/${options.pathSecret}/`;
+        if (!path.startsWith(prefix)) throw new HttpError(404, "Not found");
+        path = path.slice(prefix.length - 1);
+      }
       if (req.method === "GET" && path === "/health") {
         json(res, 200, { status: "ok" });
         return;

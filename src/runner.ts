@@ -2,7 +2,7 @@ import { TurnFailure } from "./turn-failure.ts";
 import { ClaudeTurn, claudeArgs, claudeCompactArgs, claudeInput, FALLBACK_NOTE, shouldFallBack } from "./orchestrator-fallback.ts";
 import { ClaudeProgress, CodexProgress, ProgressJournal } from "./progress.ts";
 import { turnTimeouts, turnDeadlines, failureKind, failureText, saveReceipt, type TurnReceipt } from "./recovery.ts";
-import { execFile, spawn } from "node:child_process";
+import { execFile, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { readFile, unlink } from "node:fs/promises";
@@ -13,12 +13,15 @@ import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { control } from "./client.ts";
 import { Herdr } from "./herdr.ts";
+import { resetUnit, startUnit, stopUnit, unitState } from "./turn-unit.ts";
 import { record, textField } from "./state.ts";
 
 const exec = promisify(execFile);
 // Herdr can start as a system service without a login session's user-bus environment.
-process.env.XDG_RUNTIME_DIR ??= `/run/user/${userInfo().uid}`;
-process.env.DBUS_SESSION_BUS_ADDRESS ??= `unix:path=${process.env.XDG_RUNTIME_DIR}/bus`;
+if (process.platform === "linux") {
+  process.env.XDG_RUNTIME_DIR ??= `/run/user/${userInfo().uid}`;
+  process.env.DBUS_SESSION_BUS_ADDRESS ??= `unix:path=${process.env.XDG_RUNTIME_DIR}/bus`;
+}
 const herdr = new Herdr();
 const slot = Number(process.env.CODEPAT_RUNNER_SLOT ?? "0");
 const runnerId = `slot-${slot}-${randomUUID()}`;
@@ -34,28 +37,19 @@ let activeJob: string | undefined;
 let activeUnit: string | undefined;
 let activeAttempt = 0;
 let turnSettled = false;
-let child: ReturnType<typeof spawn> | undefined;
+let child: ChildProcess | undefined;
 function stopTurn(): void {
   if (!activeJob || !child) return;
-  // systemd owns the whole turn process tree, including commands spawned by Codex.
-  void exec(
-    "systemctl",
-    ["--user", "stop", activeUnit!],
-    { timeout: 10_000 },
-  ).catch(() => console.error("Turn stop unconfirmed; settlement will retry."));
+  // The supervisor owns the whole turn process tree, including commands spawned by the agent.
+  void stopUnit(activeUnit!, process.cwd()).catch(() => console.error("Turn stop unconfirmed; settlement will retry."));
 }
 async function settleTurn(unit: string): Promise<string> {
-  // The systemd-run client can exit while its service still owns live processes.
+  // The supervisor client can exit while its turn still owns live processes.
   for (let attempt = 0; attempt < 6; attempt++) {
     try {
-      const { stdout } = await exec(
-        "systemctl",
-        ["--user", "show", unit, "--property=ActiveState,Result,LoadState"],
-        { timeout: 10_000 },
-      );
-      const fields = Object.fromEntries(stdout.trim().split("\n").map(line => line.split("=")));
-      if (["inactive", "failed"].includes(fields.ActiveState) || fields.LoadState === "not-found") return fields.Result || "unknown";
-      await exec("systemctl", ["--user", "stop", unit], { timeout: 10_000 });
+      const state = await unitState(unit, process.cwd());
+      if (["inactive", "failed"].includes(state.activeState) || state.loadState === "not-found") return state.result;
+      await stopUnit(unit, process.cwd());
     } catch {
       console.error("Turn settlement unconfirmed; retaining the active job.");
     }
@@ -68,7 +62,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const)
     stopping = true;
     stopTurn();
   });
-// Run one agent CLI as a transient systemd unit that owns its whole process tree.
+// Run one agent CLI under a supervisor that owns its whole process tree.
 function runUnit(
   command: string,
   commandArgs: string[],
@@ -80,24 +74,7 @@ function runUnit(
 ): Promise<{ exitCode: number; timedOut: boolean }> {
   return new Promise((resolve, reject) => {
     let timedOut = false;
-    child = spawn(
-      "systemd-run",
-      [
-        "--user",
-        "--quiet",
-        "--wait",
-        "--pipe",
-        `--unit=${activeUnit}`,
-        `--property=RuntimeMaxSec=${limits.runtimeSeconds}`,
-        `--property=TimeoutStopSec=${limits.stopSeconds}`,
-        "--property=KillMode=control-group",
-        `--working-directory=${process.cwd()}`,
-        ...Object.entries(env).map(([key, value]) => `--setenv=${key}=${value}`),
-        command,
-        ...commandArgs,
-      ],
-      { cwd: process.cwd(), stdio: ["pipe", "pipe", "inherit"] },
-    );
+    child = startUnit(activeUnit!, process.cwd(), command, commandArgs, env, limits);
     const lines = createInterface({ input: child.stdout! });
     lines.on("line", (line) => {
       try {
@@ -289,7 +266,7 @@ while (!stopping) {
     if (!stopping && shouldFallBack(error, codexActed)) {
       // Same unit name, so the supervisor's liveness check still covers this turn.
       console.log(`Codex unavailable (${error}); handling ${id} with Claude Code.`);
-      await exec("systemctl", ["--user", "reset-failed", activeUnit]).catch(() => undefined);
+      await resetUnit(activeUnit, process.cwd());
       const claude = new ClaudeTurn();
       // Recovery must see the Claude attempt, not the Codex failure it replaced.
       receipt.failure = undefined;
@@ -337,7 +314,7 @@ while (!stopping) {
     };
     const completionPath = join(process.cwd(), `${stem}.completion.json`);
     saveReceipt(completionPath, completion);
-    await exec("systemctl", ["--user", "reset-failed", activeUnit]).catch(() => undefined);
+    await resetUnit(activeUnit, process.cwd());
     let delivered = false;
     let threadSaved = !newThread;
     while (!delivered && !stopping) {

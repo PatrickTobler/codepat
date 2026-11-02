@@ -18,6 +18,7 @@ async function fixture(
   failed = false,
   authorizeControl?: CodePatServerOptions["authorizeControl"],
   control?: CodePatServerOptions["control"],
+  pathSecret?: string,
 ) {
   const attachmentDirectory = await mkdtemp(join(tmpdir(), "codepat-http-"));
   t.after(() => rm(attachmentDirectory, { recursive: true, force: true }));
@@ -53,6 +54,7 @@ async function fixture(
     authorizeControl,
     service,
     control: control ?? (async (action) => ({ action })),
+    pathSecret,
   });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
@@ -416,4 +418,13 @@ test("scoped control exposes safe conflicts but hides unexpected internal errors
   assert.equal(conflict.status,409);assert.match(await conflict.text(),/hold retained/);
   const unexpected=await request("/control/read",{},"alice","scoped");
   assert.equal(unexpected.status,500);assert.doesNotMatch(await unexpected.text(),/private diagnostic/);
+});
+
+test("with a path secret, chat only answers under the secret prefix", async (t) => {
+  const { request, base } = await fixture(t, false, undefined, undefined, "s3cret");
+  assert.equal((await request("/v1/conversations", {})).status, 404);
+  assert.equal((await request("/wrong/v1/conversations", {})).status, 404);
+  assert.equal((await request("/s3cret/v1/conversations", {})).status, 200);
+  assert.equal((await fetch(`${base}/health`)).status, 200);
+  assert.equal((await fetch(`${base}/control/reply`, { method: "POST", headers: { authorization: "Bearer private-secret" }, body: "{}" })).status, 200);
 });

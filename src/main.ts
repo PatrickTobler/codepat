@@ -8,6 +8,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { Herdr, paneFrom, shellQuote } from "./herdr.ts";
+import { unitState } from "./turn-unit.ts";
 import { createCodePatServer } from "./http.ts";
 import { Runtime, runnerSlot } from "./runtime.ts";
 import { type Job, record, State, textField } from "./state.ts";
@@ -58,6 +59,7 @@ const runtime = new Runtime(state, herdr, {
 const server = createCodePatServer({
   organizationId: process.env.CODEPAT_ORGANIZATION_ID ?? "",
   ownerId: process.env.CODEPAT_OWNER_ID,
+  pathSecret: process.env.CODEPAT_PATH_SECRET || undefined,
   attachmentDirectory: join(dataDir, "attachments"),
   controlToken,
   authorizeControl: (token, action, body) =>
@@ -159,14 +161,13 @@ async function ensureRunner(slot: number): Promise<void> {
   for (const job of state.all<Job>("jobs")) {
     if (job.status === "in_progress" && runnerSlot(state.get<string>("claims", job.id)) === slot) {
       const stem = job.reservationProtocol === 1 ? `${job.id}.${job.generation ?? 0}` : job.id;
-      const { stdout } = await exec("systemctl", ["--user", "show", `codepat-turn-${stem}.service`, "--property=ActiveState,LoadState"]);
-      const fields = Object.fromEntries(stdout.trim().split("\n").map(line => line.split("=")));
-      if (!["inactive", "failed"].includes(fields.ActiveState) && fields.LoadState !== "not-found") {
+      const unit = await unitState(`codepat-turn-${stem}.service`, orchestratorDir);
+      if (!["inactive", "failed"].includes(unit.activeState) && unit.loadState !== "not-found") {
         console.error("Previous turn is still supervised; no replacement runner launched.");
         return;
       }
       reconcileDeadTurn(runtime, orchestratorDir, job.id, {
-        runnerGone: shellReady, activeState: fields.ActiveState, loadState: fields.LoadState,
+        runnerGone: shellReady, activeState: unit.activeState, loadState: unit.loadState,
       });
     }
   }
