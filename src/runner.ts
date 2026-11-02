@@ -1,5 +1,5 @@
 import { TurnFailure } from "./turn-failure.ts";
-import { ClaudeTurn, claudeArgs, claudeCompactArgs, FALLBACK_NOTE, shouldFallBack } from "./orchestrator-fallback.ts";
+import { ClaudeTurn, claudeArgs, claudeCompactArgs, claudeInput, FALLBACK_NOTE, shouldFallBack } from "./orchestrator-fallback.ts";
 import { ClaudeProgress, CodexProgress, ProgressJournal } from "./progress.ts";
 import { turnTimeouts, turnDeadlines, failureKind, failureText, saveReceipt, type TurnReceipt } from "./recovery.ts";
 import { execFile, spawn } from "node:child_process";
@@ -75,7 +75,8 @@ function runUnit(
   env: Record<string, string>,
   limits: ReturnType<typeof turnDeadlines>,
   input: string,
-  onEvent: (event: Record<string, unknown>) => void,
+  onEvent: (event: Record<string, unknown>, closeInput: () => void) => void,
+  holdInput = false,
 ): Promise<{ exitCode: number; timedOut: boolean }> {
   return new Promise((resolve, reject) => {
     let timedOut = false;
@@ -100,7 +101,7 @@ function runUnit(
     const lines = createInterface({ input: child.stdout! });
     lines.on("line", (line) => {
       try {
-        onEvent(record(JSON.parse(line)));
+        onEvent(record(JSON.parse(line)), () => child?.stdin?.end());
       } catch {
         /* ignore non-protocol progress */
       }
@@ -118,7 +119,8 @@ function runUnit(
       child = undefined;
       resolve({ exitCode: code ?? 1, timedOut });
     });
-    child.stdin!.end(input);
+    if (holdInput) child.stdin!.write(input);
+    else child.stdin!.end(input);
   });
 }
 // Runs after the reply is delivered; the bridge keeps the conversation's next turn waiting meanwhile.
@@ -301,17 +303,20 @@ while (!stopping) {
         ({ exitCode, timedOut } = await runUnit("claude", claudeArgs({
           conversationId: typeof job.conversationId === "string" ? job.conversationId : undefined,
           cwd: process.cwd(),
-        }), turnEnv, limits, FALLBACK_NOTE + prompt, (event) => {
+        }), turnEnv, limits, claudeInput(FALLBACK_NOTE + prompt), (event, closeInput) => {
           const message = claude.ingest(event);
           if (message) console.log(message);
           claudeProgress.ingest(event);
-          if (claude.text !== undefined) {
-            // Write the answer before marking completion so recovery can deliver it.
-            writeFileSync(output, claude.text, { mode: 0o600 });
-            receipt.completed = true;
-            saveReceipt(receiptPath, receipt);
+          if (claude.settled) {
+            if (claude.text !== undefined) {
+              // Write the answer before marking completion so recovery can deliver it.
+              writeFileSync(output, claude.text, { mode: 0o600 });
+              receipt.completed = true;
+              saveReceipt(receiptPath, receipt);
+            }
+            closeInput();
           }
-        }));
+        }, true));
       } finally {
         clearInterval(claudeTimer);
         claudeProgress.finish();
