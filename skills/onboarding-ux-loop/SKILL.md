@@ -33,7 +33,7 @@ Run directory: `~/.local/share/codepat/loops/onboarding-ux/<YYYY-MM-DD>/` holdin
 
 1. Previews only build when the PR touches `apps/` or `packages/`. Commit an empty-behavior marker `apps/web/.onboarding-ux-baseline` (contents: the date) as `chore(web): onboarding ux baseline marker`. Push.
 2. Open the PR: `gh pr create --base main --label "user experience"`. Title: `fix(web): onboarding UX improvements <YYYY-MM-DD>` (adjust the type and scope once the fixes are known; the title must equal the primary commit subject). Body: "Daily onboarding UX run, in progress."
-3. Comment `/deploy mainnet --reset-db` and note the comment time. Wait for readiness:
+3. Comment `/deploy mainnet` and note the comment time. A new PR has no Neon branch yet, so this first deploy creates a fresh clone of mainnet. `--reset-db` fails here. Wait for readiness:
    - the `Preview deploy` workflow run (event `issue_comment`, created after your comment, mentioning this PR in its log) concludes `success` (`gh run watch <id> --exit-status`);
    - the Vercel bot comment shows `sokosumi-app-mainnet` and `sokosumi-core-mainnet` as Ready with a time after your comment;
    - `https://sokosumi-app-mainnet-git-<branch>.preview.sokosumi.com/signup` returns 200. Take the exact host from the Vercel comment; long branch names get shortened.
@@ -63,7 +63,7 @@ Prefer fixes that remove a step, clarify a decision, fix a defect, or explain wh
 1. Delete the marker file. Implement the fixes following the repo's agent rules (Web UI conventions, i18n for every message, reuse existing components). Add or update focused tests.
 2. Run checks for what you touched: `pnpm exec turbo run typecheck test --filter=@sokosumi/web` (plus other packages you changed) and `pnpm check`. Fix all findings.
 3. Commit with a Conventional Commit subject, retitle the PR to match, and push.
-4. Comment `/deploy mainnet --reset-db` again and wait as in step 1.3. Walk the same path with a new mailbox address, saving screenshots to `after/` with matching numbers and slugs where the step still exists. Confirm each fix is visible and nothing else regressed. If a fix does not hold, repair it (at most two rounds) or drop it and say so.
+4. Comment `/deploy mainnet --reset-db` (the branch now exists; the reset gives a clean clone again) and wait as in step 1.3. Walk the same path with a new mailbox address, saving screenshots to `after/` with matching numbers and slugs where the step still exists. Confirm each fix is visible and nothing else regressed. If a fix does not hold, repair it (at most two rounds) or drop it and say so.
 
 ## Step 5: Worker hand-off
 
