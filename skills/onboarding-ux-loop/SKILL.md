@@ -69,14 +69,31 @@ Prefer fixes that remove a step, clarify a decision, fix a defect, or explain wh
 
 Write `result.json`:
 `{ "pr": <url>, "preview": <url>, "fixes": [<one line each>], "dropped": [...], "blocker": null | <text>, "screenshots": { "before": [...], "after": [...] } }`
-Append today's findings to the ledger, one line each: date, finding, status (`fixed in PR`, `open`, `won't fix`). Then stop. The coordinator takes over.
+Append today's findings to the ledger, one line each: date, finding, status (`fixed in PR`, `open`, `won't fix`).
+
+Write the walkthrough Patrick reads on the task: one file per step of the final complete flow, `steps/NN-<slug>.md`, numbered in flow order. Reference screenshots by placeholder, not path; the coordinator swaps in uploaded URLs. Each file stays under 900 characters and follows this shape:
+
+```
+**Step 5 of 16: Workspace choice**
+
+![Before](<<before/05-workspace-choice.png>>)
+
+Personal is preselected; Organization is one click away.
+Issues: Privacy Policy and Terms links lead to 404 pages.
+Fixed in this PR: both links open the real policy pages in a new tab.
+
+![After](<<after/05-workspace-choice.png>>)
+```
+
+Rules: one screenshot per screen, before first. Add the after image and the "Fixed in this PR" line only on steps this PR changes. Write "Issues: none." when there are none. Plain words, no em dashes. Extra probes and preliminary rounds stay in the report, not in steps. Then stop. The coordinator takes over.
 
 ## Step 6: Coordinator delivers
 
-1. Check `result.json` against the PR, the files, and the diff. Upload `report.md` and every screenshot, before and after, with `codepat task-upload --file <path>`. Keep the returned `fileUrl`s.
+1. Check `result.json` against the PR, the files, and the diff. Upload `report.md` and the screenshots referenced by `steps/` with `codepat task-upload --file <path>`, keeping the returned `fileUrl`s in `uploaded-files.json`. Upload other screenshots only if the report links them.
 2. Update the PR body: summary, the fixes, the preview URL, and before/after image links (the uploaded `fileUrl`s) for each fixed step. The repo is public; that is fine for throwaway test-account screenshots. Mark the PR ready for review.
-3. `task-report INPUT_REQUIRED` with a short comment: PR link, the fixes in one line each, the preview URL, the report link, and `Reply **merge** or **delete**.`
-4. Stop the worker and close only the tab you created. Keep the worktree until the decision.
+3. Post the walkthrough: for each `steps/*.md` in order, replace every `<<path>>` with its `fileUrl` and post it with `codepat task-report RUNNING --file <filled step>`. Post one at a time, so the task reads top to bottom as the flow. These step comments are this loop's deliverable, so the usual task-comment length and repetition rules don't apply to them.
+4. Last, post `task-report INPUT_REQUIRED` with a short comment: PR link, the fixes in one line each, the preview URL, the report link, "Walkthrough: one comment per step above.", and `Reply **merge** or **delete**.`
+5. Stop the worker and close only the tab you created. Keep the worktree until the decision.
 
 ## Step 7: Patrick's decision (task comment)
 
