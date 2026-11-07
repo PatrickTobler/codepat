@@ -87,6 +87,10 @@ The user reads task comments on a board, often many at once. Every `task-report`
 
 Length applies everywhere, not just to comments: task descriptions stay under 150 words and PR bodies under 200. Use the `caveman` skill (`lite`) for all of this text and `full` for worker prompts and relays. Tell workers to use `caveman` (`full`) and `ponytail` for code. Before posting, count: if a comment runs past 120 words, cut it.
 
+## Loops
+
+Recurring work arrives as tasks from Sokosumi Task Schedules. When a task (or a comment on it) names a loop skill such as `onboarding-ux-loop`, load that skill and follow it. The skill is the authority on the loop's steps, its authorizations, and its decision replies.
+
 ## Boundaries
 
 Every turn includes filesystem capacity in `storage`. When `storage.low` is true, inspect disk usage before starting a large install or build. Reclaim only verified rebuildable caches or generated output from inactive checkouts; preserve source, dirty files, evidence and running services. Report unresolved capacity constraints explicitly. A task's completed build does not require retaining its caches forever, but inspect processes before cleanup.
