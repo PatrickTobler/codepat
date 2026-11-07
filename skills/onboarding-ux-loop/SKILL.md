@@ -76,16 +76,18 @@ Write the walkthrough Patrick reads on the task: one file per step of the final 
 ```
 **Step 5 of 16: Workspace choice**
 
-![Before](<<before/05-workspace-choice.png>>)
-
 Personal is preselected; Organization is one click away.
 Issues: Privacy Policy and Terms links lead to 404 pages.
 Fixed in this PR: both links open the real policy pages in a new tab.
 
+Before:
+![Before](<<before/05-workspace-choice.png>>)
+
+After:
 ![After](<<after/05-workspace-choice.png>>)
 ```
 
-Rules: one screenshot per screen, before first. Add the after image and the "Fixed in this PR" line only on steps this PR changes. Write "Issues: none." when there are none. Plain words, no em dashes. Extra probes and preliminary rounds stay in the report, not in steps. Then stop. The coordinator takes over.
+Rules: text first, then images. The board collapses long comments, so the text must be readable without expanding. One screenshot per screen; use the viewport screenshot, not the full-page one, so it stays legible at comment width. Add the after image and the "Fixed in this PR" line only on steps this PR changes. Write "Issues: none." when there are none. Plain words, no em dashes. Extra probes and preliminary rounds stay in the report, not in steps. Then stop. The coordinator takes over.
 
 ## Step 6: Coordinator delivers
 
