@@ -87,7 +87,7 @@ After:
 ![After](<<after/05-workspace-choice.png>>)
 ```
 
-Rules: text first, then images. The board collapses long comments, so the text must be readable without expanding. One screenshot per screen; use the viewport screenshot, not the full-page one, so it stays legible at comment width. Add the after image and the "Fixed in this PR" line only on steps this PR changes. Write "Issues: none." when there are none. Plain words, no em dashes. Extra probes and preliminary rounds stay in the report, not in steps. Then stop. The coordinator takes over.
+Rules: text first, then images. The board collapses long comments, so the text must be readable without expanding. One screenshot per screen. Add the after image and the "Fixed in this PR" line only on steps this PR changes. Write "Issues: none." when there are none. Plain words, no em dashes. Extra probes and preliminary rounds stay in the report, not in steps. Then stop. The coordinator takes over.
 
 ## Step 6: Coordinator delivers
 
