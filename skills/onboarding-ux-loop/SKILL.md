@@ -61,7 +61,7 @@ Prefer fixes that remove a step, clarify a decision, fix a defect, or explain wh
 ## Step 4: Implement and verify (after)
 
 1. Delete the marker file. Implement the fixes following the repo's agent rules (Web UI conventions, i18n for every message, reuse existing components). Add or update focused tests.
-2. Run checks for what you touched: `pnpm exec turbo run typecheck test --filter=@sokosumi/web` (plus other packages you changed) and `pnpm check`. Fix all findings.
+2. Run checks for what you touched: `pnpm exec turbo run typecheck test --filter=web` (plus other workspaces you changed; use their `package.json` names) and `pnpm check`. Fix all findings.
 3. Commit with a Conventional Commit subject, retitle the PR to match, and push.
 4. Comment `/deploy mainnet --reset-db` (the branch now exists; the reset gives a clean clone again) and wait as in step 1.3. Walk the same path with a new mailbox address, saving screenshots to `after/` with matching numbers and slugs where the step still exists. Confirm each fix is visible and nothing else regressed. If a fix does not hold, repair it (at most two rounds) or drop it and say so.
 
