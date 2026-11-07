@@ -57,7 +57,16 @@ function installLaunchAgent(): void {
   } catch {
     /* not loaded yet */
   }
-  execFileSync("launchctl", ["bootstrap", domain, plistPath], { stdio: "inherit" });
+  // bootout returns before launchd has unloaded the job; bootstrap fails with EIO until it has.
+  for (let attempt = 1; ; attempt++) {
+    try {
+      execFileSync("launchctl", ["bootstrap", domain, plistPath], { stdio: "pipe" });
+      break;
+    } catch (error) {
+      if (attempt === 10) throw error;
+      execFileSync("sleep", ["1"]);
+    }
+  }
   console.log(`CodePat launch agent installed (${plistPath}); logs in ${logDir}.`);
 }
 
