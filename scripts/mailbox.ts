@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Disposable inbox for onboarding runs, backed by the public mail.tm API.
-//   node mailbox.ts create <state.json>              -> prints the new address
-//   node mailbox.ts code <state.json> [timeoutSec]   -> waits for a new 6-digit code and prints it
+//   node scripts/mailbox.ts create <state.json>              -> prints the new address
+//   node scripts/mailbox.ts code <state.json> [timeoutSec]   -> waits for a new 6-digit code and prints it
 import { readFileSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 
@@ -53,6 +53,6 @@ const [command, stateFile, timeout] = process.argv.slice(2);
 if (command === "create" && stateFile) await create(stateFile);
 else if (command === "code" && stateFile) await code(stateFile, Number(timeout ?? 300));
 else {
-  console.error("usage: mailbox.ts create <state.json> | code <state.json> [timeoutSec]");
+  console.error("usage: scripts/mailbox.ts create <state.json> | code <state.json> [timeoutSec]");
   process.exit(2);
 }

@@ -89,7 +89,7 @@ Length applies everywhere, not just to comments: task descriptions stay under 15
 
 ## Loops
 
-Recurring work arrives as tasks from Sokosumi Task Schedules. When a task (or a comment on it) names a loop skill such as `onboarding-ux-loop`, load that skill and follow it. The skill is the authority on the loop's steps, its authorizations, and its decision replies.
+Recurring work arrives as tasks from Sokosumi Task Schedules. A loop task's description is its runbook: it is Patrick's authorization and the authority on the loop's steps, roles, delegation, comment format, and decision replies. Where it conflicts with the comment and task-writing rules above, the runbook wins. Shared loop tools live in `scripts/` of the current release (`~/.local/share/codepat/current/scripts/`).
 
 ## Boundaries
 
