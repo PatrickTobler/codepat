@@ -692,11 +692,13 @@ test("a task turn can create several distinct child tasks", async () => {
       }
       throw new Error(`Unexpected ${method} ${path}`);
     };
-    const create = (name: string) => f.runtime.control("task-create", { jobId: parent.id, projectId, name, description: "Audit one area.", distinct: true }) as Promise<{ task: Record<string, unknown> }>;
+    const create = (name: string) => f.runtime.control("task-create", { jobId: parent.id, projectId, name, description: "Audit one area.", distinct: true }) as Promise<{ task: Record<string, unknown>; url: string }>;
+    f.config.apiUrl = "https://api.sokosumi.com/v1";
     const first = await create("Audit chat");
     const second = await create("Audit tasks");
     const again = await create("Audit chat");
     assert.deepEqual([first.task.id, second.task.id, again.task.id], ["child-1", "child-2", "child-1"]);
+    assert.equal(first.url, "https://app.sokosumi.com/tasks/child-1");
   } finally {
     f.close();
   }
@@ -1012,6 +1014,25 @@ test("task turn completion delivers once to the task without duplicating explici
     assert.equal(items.length, 2, "an unreported final answer is delivered to the task");
     assert.match(String(items[1].body.comment), /summary/);
     assert.equal(items[1].path, "/tasks/task-2/events");
+  } finally {
+    f.close();
+  }
+});
+
+test("a status handoff ends the turn's task comments, but progress reports do not", async () => {
+  const f = fixture();
+  try {
+    const { job } = taskJob(f);
+    f.runtime.nextJob("runner", 1);
+    f.runtime.api = async () => ({ data: assignedTask });
+    await f.runtime.control("task-report", { jobId: job.id, status: "INPUT_REQUIRED", text: "Reply merge or delete." });
+    await f.runtime.control("reply", { jobId: job.id, attempt: 0, text: "Input required. Reply merge or delete for the PR." });
+    assert.equal(f.state.all("outbox").length, 1, "a reworded recap of the handoff adds nothing");
+    const again = taskJob(f, "task-2");
+    f.runtime.nextJob("runner", 1);
+    await f.runtime.control("task-report", { jobId: again.job.id, status: "RUNNING", text: "Step 1 of 3" });
+    await f.runtime.control("reply", { jobId: again.job.id, attempt: 0, text: "All steps posted." });
+    assert.equal(f.state.all("outbox").length, 3, "a final answer after progress reports is still delivered");
   } finally {
     f.close();
   }

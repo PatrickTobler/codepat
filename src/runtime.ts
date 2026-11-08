@@ -460,9 +460,9 @@ export class Runtime implements ChatService {
       job.error = error;
       job.completedAt = Date.now();
       this.state.put("jobs", id, job);
-      // A task turn's final answer belongs on the Sokosumi task; an explicit
-      // task-report in the same turn already delivered it.
-      if (job.kind === "task" && job.taskId && text &&
+      // A task turn's final answer belongs on the Sokosumi task, unless the turn
+      // already delivered it or handed the task off with a status report.
+      if (job.kind === "task" && job.taskId && text && !this.state.get("jobTaskHandoff", job.id) &&
           this.state.get<string>("jobTaskReport", job.id) !== text)
         this.reportTask(job.taskId, text, undefined, job.conversationId);
     });
@@ -624,7 +624,7 @@ export class Runtime implements ChatService {
       input: `Recover this existing Sokosumi task. Inspect preserved work and attached resources before continuing. Task: ${JSON.stringify(task)}`,
     }, `task-recover:${id}:${remoteRevision}`);
   }
-  async createTask(job: Job, body: Record<string, unknown>): Promise<{ task: Record<string, unknown>; job: Job }> {
+  async createTask(job: Job, body: Record<string, unknown>): Promise<{ task: Record<string, unknown>; url: string; job: Job }> {
     if (job.kind !== "chat" && job.kind !== "task") throw new Error("Tasks can only be created from a chat or task turn");
     if (body.distinct !== true)
       throw new Error("Confirm this is a genuinely distinct deliverable; otherwise use task-continue on the existing task");
@@ -675,9 +675,14 @@ export class Runtime implements ChatService {
       conversationId,
       kind: "task",
       taskId,
-      input: `New Sokosumi task created from chat. Begin the work described by the task. Task: ${JSON.stringify(task)}`,
+      input: `New Sokosumi task created from ${job.kind === "task" ? "another task" : "chat"}. Begin the work described by the task. Task: ${JSON.stringify(task)}`,
     }, `task-created:${taskId}`);
-    return { task, job: taskJob };
+    return { task, url: this.taskUrl(taskId), job: taskJob };
+  }
+  taskUrl(taskId: string): string {
+    const app = new URL(this.config.apiUrl);
+    app.hostname = app.hostname.replace(/^api\./, "app.");
+    return `${app.origin}/tasks/${encodeURIComponent(taskId)}`;
   }
   async continueTask(job: Job, body: Record<string, unknown>): Promise<Record<string, unknown>> {
     if (job.kind !== "chat") throw new Error("Existing tasks can only be continued from a chat request");
@@ -1365,6 +1370,7 @@ export class Runtime implements ChatService {
         }
         this.state.put("taskReportReceipts", receipt, { notificationId });
         this.state.put("jobTaskReport", job.id, content);
+        if (status && status !== "RUNNING") this.state.put("jobTaskHandoff", job.id, true);
         return this.taskReportResult(notificationId);
       });
     }
