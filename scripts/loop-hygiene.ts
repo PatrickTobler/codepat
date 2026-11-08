@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Daily cleanup for the loops' leftovers on this host.
 //   node scripts/loop-hygiene.ts <sokosumi-repo> <memory-dir> [--apply]
-// Without --apply it only reports. Touches only loop branches (sokd-<n>-onboarding-ux, sokd-<n>-app-ux-<area>)
+// Without --apply it only reports. Touches only loop branches (sokd-<n>-onboarding-ux, sokd-<n>-app-ux-<area>, sokd-<n>-feature)
 // and their worktrees in <sokosumi-repo>/../sokosumi-ux; open PRs are reported, never changed.
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -9,7 +9,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
 const REPO = "masumi-network/sokosumi";
-const LOOP_BRANCH = /^sokd-(\d+)-(onboarding-ux|app-ux-[a-z0-9-]+)$/;
+const LOOP_BRANCH = /^sokd-(\d+)-(onboarding-ux|app-ux-[a-z0-9-]+|feature)$/;
 const WAITING_DAYS = 3;
 const KEEP_RUN_DAYS = 14;
 const HERDR = join(homedir(), ".local/bin/herdr");
@@ -129,7 +129,21 @@ function main(): void {
     if (changed) done.push(`${area.area}: marked ${changed} finding${changed > 1 ? "s" : ""} from resolved PRs as merged or rejected.`);
   }
 
-  for (const loop of ["app-ux/runs", "onboarding-ux"]) {
+  const ideasPath = join(memory, "features", "ideas.json");
+  if (existsSync(ideasPath)) {
+    const ideas: { status: string; pr?: unknown }[] = JSON.parse(readFileSync(ideasPath, "utf8"));
+    let changed = 0;
+    for (const idea of ideas) {
+      const pr = byNumber.get(prNumber(idea.pr) ?? -1);
+      if (idea.status !== "built" || !pr || pr.state === "OPEN") continue;
+      idea.status = pr.state === "MERGED" ? "merged" : "rejected";
+      changed++;
+    }
+    if (changed && apply) writeFileSync(ideasPath, `${JSON.stringify(ideas, null, 2)}\n`);
+    if (changed) done.push(`features: marked ${changed} idea${changed > 1 ? "s" : ""} from resolved PRs as merged or rejected.`);
+  }
+
+  for (const loop of ["app-ux/runs", "onboarding-ux", "features/runs"]) {
     const dir = join(memory, loop);
     for (const folder of existsSync(dir) ? readdirSync(dir).filter((f) => /^\d{4}-\d{2}-\d{2}/.test(f)) : []) {
       const path = join(dir, folder);
