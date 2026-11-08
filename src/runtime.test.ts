@@ -673,6 +673,35 @@ test("chat task creation reconciles by marker and immediately queues the new tas
   }
 });
 
+test("a task turn can create several distinct child tasks", async () => {
+  const f = fixture();
+  try {
+    const projectId = "019e7d0f-9a3e-770c-94df-197a31e9bfa5";
+    const conversation = f.runtime.createConversation("alice", { taskId: "parent", sokosumi_organization_id: "org" });
+    const parent = f.state.enqueue({ conversationId: conversation.id, kind: "task", taskId: "parent", input: "run the loop" });
+    f.runtime.nextJob("runner", 1);
+    const created: Record<string, unknown>[] = [];
+    f.runtime.api = async (path, method, body) => {
+      if (path.startsWith("/projects?")) return { data: [{ id: projectId }], meta: { pagination: { nextCursor: null } } };
+      if (path === `/projects/${projectId}`) return { data: { id: projectId } };
+      if (path.startsWith("/tasks?")) return { data: created, meta: { pagination: { nextCursor: null } } };
+      if (path === "/tasks" && method === "POST") {
+        const task = { id: `child-${created.length + 1}`, ...(body as Record<string, unknown>), projectId, organizationId: "org", ownerId: "alice", assigneeId: "codepat" };
+        created.push(task);
+        return { data: task };
+      }
+      throw new Error(`Unexpected ${method} ${path}`);
+    };
+    const create = (name: string) => f.runtime.control("task-create", { jobId: parent.id, projectId, name, description: "Audit one area.", distinct: true }) as Promise<{ task: Record<string, unknown> }>;
+    const first = await create("Audit chat");
+    const second = await create("Audit tasks");
+    const again = await create("Audit chat");
+    assert.deepEqual([first.task.id, second.task.id, again.task.id], ["child-1", "child-2", "child-1"]);
+  } finally {
+    f.close();
+  }
+});
+
 test("chat continuation reuses an owned task conversation and durably updates the original task", async () => {
   const f = fixture();
   try {

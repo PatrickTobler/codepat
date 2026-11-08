@@ -625,7 +625,7 @@ export class Runtime implements ChatService {
     }, `task-recover:${id}:${remoteRevision}`);
   }
   async createTask(job: Job, body: Record<string, unknown>): Promise<{ task: Record<string, unknown>; job: Job }> {
-    if (job.kind !== "chat") throw new Error("Tasks can only be created from a chat request");
+    if (job.kind !== "chat" && job.kind !== "task") throw new Error("Tasks can only be created from a chat or task turn");
     if (body.distinct !== true)
       throw new Error("Confirm this is a genuinely distinct deliverable; otherwise use task-continue on the existing task");
     const conversation = this.state.get<Conversation>("conversations", job.conversationId);
@@ -637,7 +637,7 @@ export class Runtime implements ChatService {
     if (name.length > 200 || description.length > 20_000) throw new Error("Task text is too long");
     const headers = this.contextHeaders(conversation);
     await inspectProject(this.api.bind(this), projectId, headers);
-    const marker = `codepat-request:${job.id}`;
+    const marker = `codepat-request:${job.id}:${createHash("sha256").update(name).digest("hex").slice(0, 12)}`;
     const find = async () => (await pages(
       this.api.bind(this),
       `/tasks?scope=owned&projectId=${encodeURIComponent(projectId)}`,
