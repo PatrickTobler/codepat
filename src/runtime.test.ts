@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { Agent, HerdrPort } from "./herdr.ts";
-import { Runtime } from "./runtime.ts";
+import { ApiError, Runtime } from "./runtime.ts";
 import { type Job, type Outbox, State } from "./state.ts";
 
 function fixture() {
@@ -681,10 +681,17 @@ test("a task turn can create several distinct child tasks", async () => {
     const parent = f.state.enqueue({ conversationId: conversation.id, kind: "task", taskId: "parent", input: "run the loop" });
     f.runtime.nextJob("runner", 1);
     const created: Record<string, unknown>[] = [];
+    const links: unknown[] = [];
     f.runtime.api = async (path, method, body) => {
       if (path.startsWith("/projects?")) return { data: [{ id: projectId }], meta: { pagination: { nextCursor: null } } };
       if (path === `/projects/${projectId}`) return { data: { id: projectId } };
       if (path.startsWith("/tasks?")) return { data: created, meta: { pagination: { nextCursor: null } } };
+      if (path === "/tasks/parent") return { data: { id: "parent", identifier: "SOKD-1" } };
+      if (path === "/tasks/parent/links" && method === "POST") {
+        if (links.length) throw new ApiError(409, "Sokosumi POST /tasks/parent/links returned 409");
+        links.push(body);
+        return { data: {} };
+      }
       if (path === "/tasks" && method === "POST") {
         const task = { id: `child-${created.length + 1}`, ...(body as Record<string, unknown>), projectId, organizationId: "org", ownerId: "alice", assigneeId: "codepat" };
         created.push(task);
@@ -699,6 +706,10 @@ test("a task turn can create several distinct child tasks", async () => {
     const again = await create("Audit chat");
     assert.deepEqual([first.task.id, second.task.id, again.task.id], ["child-1", "child-2", "child-1"]);
     assert.equal(first.url, "https://app.sokosumi.com/tasks/child-1");
+    assert.match(String(first.task.description), /^Part of \[SOKD-1\]\(https:\/\/app\.sokosumi\.com\/tasks\/parent\)\.\n\nAudit one area\./);
+    assert.deepEqual(links[0], { toTaskId: "child-1", relation: "parent" });
+    assert.equal((first as { linked?: boolean }).linked, true);
+    assert.equal((again as { linked?: boolean }).linked, true, "an existing link counts as linked");
   } finally {
     f.close();
   }

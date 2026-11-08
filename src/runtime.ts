@@ -35,7 +35,7 @@ interface Scope {
   id: string;
   generation?: number;
 }
-class ApiError extends Error {
+export class ApiError extends Error {
   status: number;
   rejectionKind?: string;
   constructor(status: number, message: string, rejectionKind?: string) {
@@ -624,7 +624,7 @@ export class Runtime implements ChatService {
       input: `Recover this existing Sokosumi task. Inspect preserved work and attached resources before continuing. Task: ${JSON.stringify(task)}`,
     }, `task-recover:${id}:${remoteRevision}`);
   }
-  async createTask(job: Job, body: Record<string, unknown>): Promise<{ task: Record<string, unknown>; url: string; job: Job }> {
+  async createTask(job: Job, body: Record<string, unknown>): Promise<{ task: Record<string, unknown>; url: string; job: Job; linked?: boolean }> {
     if (job.kind !== "chat" && job.kind !== "task") throw new Error("Tasks can only be created from a chat or task turn");
     if (body.distinct !== true)
       throw new Error("Confirm this is a genuinely distinct deliverable; otherwise use task-continue on the existing task");
@@ -637,6 +637,9 @@ export class Runtime implements ChatService {
     if (name.length > 200 || description.length > 20_000) throw new Error("Task text is too long");
     const headers = this.contextHeaders(conversation);
     await inspectProject(this.api.bind(this), projectId, headers);
+    const parent = job.kind === "task" && job.taskId
+      ? record((await this.api(`/tasks/${encodeURIComponent(job.taskId)}`, "GET", undefined, headers)).data)
+      : undefined;
     const marker = `codepat-request:${job.id}:${createHash("sha256").update(name).digest("hex").slice(0, 12)}`;
     const find = async () => (await pages(
       this.api.bind(this),
@@ -650,7 +653,7 @@ export class Runtime implements ChatService {
       try {
         task = record((await this.api("/tasks", "POST", {
           name,
-          description: `${description}\n\n${marker}`,
+          description: `${parent ? `Part of [${parent.identifier ?? "parent task"}](${this.taskUrl(textField(parent, "id"))}).\n\n` : ""}${description}\n\n${marker}`,
           projectId,
           coworkerId: this.config.coworkerId,
           status: "READY",
@@ -677,7 +680,19 @@ export class Runtime implements ChatService {
       taskId,
       input: `New Sokosumi task created from ${job.kind === "task" ? "another task" : "chat"}. Begin the work described by the task. Task: ${JSON.stringify(task)}`,
     }, `task-created:${taskId}`);
-    return { task, url: this.taskUrl(taskId), job: taskJob };
+    return { task, url: this.taskUrl(taskId), job: taskJob, ...(parent ? { linked: await this.linkChild(textField(parent, "id"), taskId, headers) } : {}) };
+  }
+  // Sokosumi shows a PARENT link on both tasks. Core may refuse coworker keys; the
+  // description backlink keeps the relation visible either way.
+  async linkChild(parentId: string, childId: string, headers: Record<string, string>): Promise<boolean> {
+    try {
+      await this.api(`/tasks/${encodeURIComponent(parentId)}/links`, "POST", { toTaskId: childId, relation: "parent" }, headers);
+      return true;
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 409) return true;
+      if (error instanceof ApiError && error.status === 403) return false;
+      throw error;
+    }
   }
   taskUrl(taskId: string): string {
     const app = new URL(this.config.apiUrl);
