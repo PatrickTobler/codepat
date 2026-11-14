@@ -918,6 +918,7 @@ export class Runtime implements ChatService {
     const byPane = new Map(agents.map(agent => [agent.pane_id, agent]));
     for (const runtime of runtimes) {
       const transitions: string[] = [];
+      const wakes: string[] = [];
       for (const resource of runtime.resources) {
         if (resource.kind !== "herdr") continue;
         const agent = byPane.get(resource.resourceId);
@@ -937,11 +938,13 @@ export class Runtime implements ChatService {
         resource.seenWorking = wasWorking || status === "working";
         resource.status = status;
         resource.revision = revision;
-        if (transitions.at(-1) === `${resource.resourceId} is ${status} after work cycle ${resource.cycle ?? 1}`)
+        if (transitions.at(-1) === `${resource.resourceId} is ${status} after work cycle ${resource.cycle ?? 1}`) {
           resource.lastWake = fingerprint;
+          wakes.push(`${transitions.at(-1)} attached ${resource.attachedAt}`);
+        }
       }
       if (transitions.length) {
-        const key = createHash("sha256").update(JSON.stringify(transitions)).digest("hex");
+        const key = createHash("sha256").update(JSON.stringify(wakes)).digest("hex");
         this.state.enqueue({
           conversationId: runtime.conversationId,
           kind: "task",

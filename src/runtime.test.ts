@@ -415,6 +415,34 @@ test("task runtime wakes again after the same agent completes a later work cycle
   }
 });
 
+test("a re-attached watcher pane wakes the coordinator again when its new run settles", async () => {
+  const f = fixture();
+  try {
+    const { job } = taskJob(f);
+    const attach = (jobId: string) =>
+      f.runtime.control("task-runtime", { jobId, operation: "attach", kind: "herdr", resourceId: "w1:p9", role: "watcher" });
+    f.setAgents([{ pane_id: "w1:p9", agent_status: "working", agent: "watcher", revision: 0 }]);
+    f.runtime.nextJob("runner", 1);
+    await attach(job.id);
+    f.runtime.completeJob(job.id, "watching the merge");
+    f.setAgents([{ pane_id: "w1:p9", agent_status: "done", agent: "watcher", revision: 0 }]);
+    await f.runtime.pollTaskRuntimes();
+    assert.equal(f.state.all<Job>("jobs").length, 2);
+
+    const wake = f.runtime.nextJob("runner", 1)!;
+    await f.runtime.control("task-runtime", { jobId: wake.job.id, operation: "detach", kind: "herdr", resourceId: "w1:p9" });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    f.setAgents([{ pane_id: "w1:p9", agent_status: "working", agent: "watcher", revision: 0 }]);
+    await attach(wake.job.id);
+    f.runtime.completeJob(wake.job.id, "branch updated, watching again");
+    f.setAgents([{ pane_id: "w1:p9", agent_status: "done", agent: "watcher", revision: 0 }]);
+    await f.runtime.pollTaskRuntimes();
+    assert.equal(f.state.all<Job>("jobs").length, 3);
+  } finally {
+    f.close();
+  }
+});
+
 test("task runtimes support multiple external resources and explicit detach", async () => {
   const f = fixture();
   try {
