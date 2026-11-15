@@ -25,10 +25,10 @@ if (!out || shots.length !== 3) {
   console.error("usage: node scripts/viewports.ts <out.png> <phone.png> <tablet.png> <desktop.png>");
   process.exit(2);
 }
-const labels = ["Phone", "Tablet", "Desktop"];
+const labels = ["Phone · 375", "Tablet · 768", "Desktop · 1440"];
 const panels = shots.map((path, i) => {
   const { width, height } = size(path);
-  return { src: pathToFileURL(resolve(path)).href, label: `${labels[i]} · ${width} px`, width: Math.round((width * HEIGHT) / height) };
+  return { src: pathToFileURL(resolve(path)).href, label: labels[i], width: Math.round((width * HEIGHT) / height) };
 });
 const width = panels.reduce((sum, p) => sum + p.width, 0) + GAP * (panels.length + 1);
 const height = HEIGHT + LABEL + GAP * 2;
