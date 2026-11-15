@@ -905,7 +905,8 @@ export class Runtime implements ChatService {
                     conversationId,
                     kind: "task",
                     taskId,
-                    quiet: !hasComment,
+                    // A new task's first turn, and any turn answering a comment, may speak on the task.
+                    quiet: !hasComment && Boolean(this.state.get("taskStarts", taskId)),
                     input: `Sokosumi task event. Task: ${JSON.stringify(task)}\nEvent: ${JSON.stringify(event)}`,
                   },
                   `event:${id}`,
