@@ -29,6 +29,9 @@ const timeouts = turnTimeouts();
 // Sessions above this many context tokens are compacted after the reply is delivered.
 const compactTokens = Number(process.env.CODEPAT_COMPACT_TOKENS ?? "80000");
 if (!Number.isInteger(compactTokens) || compactTokens < 20_000) throw new Error("CODEPAT_COMPACT_TOKENS must be an integer of at least 20000");
+// Codex compacts mid-turn whenever it is over this limit, so it must sit well above a freshly
+// compacted thread (~90k with AGENTS.md and context), or it compacts before every step.
+const codexCompactTokens = Math.max(compactTokens, 200_000);
 const pane = process.env.HERDR_PANE_ID;
 if (!pane || process.env.HERDR_ENV !== "1")
   throw new Error("CodePat runner must run in a Herdr pane");
@@ -170,7 +173,7 @@ while (!stopping) {
       "-c",
       'sandbox_mode="danger-full-access"',
       "-c",
-      `model_auto_compact_token_limit=${compactTokens}`,
+      `model_auto_compact_token_limit=${codexCompactTokens}`,
       ...(threadId ? ["resume", threadId] : []),
       "--skip-git-repo-check",
       "--json",
