@@ -58,18 +58,24 @@ export function failureKind(result: string | undefined, exit: number, watchdog: 
   if (!hasText) return "turn_empty_output";
   return undefined;
 }
+const reasons: Record<string, string> = {
+  turn_timeout: "CodePat reached its turn time limit.",
+  turn_oom_killed: "The operating system reported an out-of-memory kill for this turn.",
+  turn_signal: "The turn ended from a process signal.",
+  turn_interrupted: "The turn was interrupted.",
+  turn_exit_failure: "The turn exited unsuccessfully.",
+  turn_empty_output: "The turn ended without a final answer.",
+  fallback_failed: "Codex was unavailable and the Claude Code fallback also failed.",
+  recovery_required: "The previous turn stopped without a confirmed completion.",
+  recovery_limit: "The bounded recovery limit was reached.",
+};
+// Turn failures that a fresh turn can pick up from, so CodePat retries them once before telling the user.
+export const RETRYABLE_TURN_FAILURES = ["turn_timeout", "turn_signal", "turn_interrupted", "turn_exit_failure", "turn_empty_output", "recovery_required"];
+export function plainFailureText(kind: string, retried: boolean): string {
+  const why = kind === "turn_timeout" ? "it ran out of time" : "it stopped unexpectedly";
+  return `CodePat paused this task: ${why}${retried ? " twice" : ""}. Its work so far is kept. Reply here to continue.`;
+}
 export function failureText(kind: string): string {
-  const reasons: Record<string, string> = {
-    turn_timeout: "CodePat reached its turn time limit.",
-    turn_oom_killed: "The operating system reported an out-of-memory kill for this turn.",
-    turn_signal: "The turn ended from a process signal.",
-    turn_interrupted: "The turn was interrupted.",
-    turn_exit_failure: "The turn exited unsuccessfully.",
-    turn_empty_output: "The turn ended without a final answer.",
-    fallback_failed: "Codex was unavailable and the Claude Code fallback also failed.",
-    recovery_required: "The previous turn stopped without a confirmed completion.",
-    recovery_limit: "The bounded recovery limit was reached.",
-  };
   return `${reasons[kind] ?? protocolFailureText(kind) ?? "The runner could not finish this turn."} Existing actions remain tracked. Inspect completed actions and uncertain deliveries before continuing; do not start duplicate work.`;
 }
 

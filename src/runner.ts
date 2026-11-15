@@ -4,10 +4,11 @@ import { ClaudeProgress, CodexProgress, ProgressJournal } from "./progress.ts";
 import { turnTimeouts, turnDeadlines, failureKind, failureText, saveReceipt, type TurnReceipt } from "./recovery.ts";
 import { execFile, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import { existsSync, realpathSync, writeFileSync } from "node:fs";
 import { readFile, unlink } from "node:fs/promises";
 import { userInfo } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
@@ -26,6 +27,10 @@ const herdr = new Herdr();
 const slot = Number(process.env.CODEPAT_RUNNER_SLOT ?? "0");
 const runnerId = `slot-${slot}-${randomUUID()}`;
 const timeouts = turnTimeouts();
+// Runners outlive deploys; between jobs a runner exits once `current` points at a newer release, and the bridge relaunches it.
+const release = realpathSync(join(dirname(fileURLToPath(import.meta.url)), ".."));
+const current = join(dirname(process.env.CODEPAT_CONFIG ?? ""), "current");
+const outdated = (): boolean => existsSync(current) && realpathSync(current) !== release;
 // Sessions above this many context tokens are compacted after the reply is delivered.
 const compactTokens = Number(process.env.CODEPAT_COMPACT_TOKENS ?? "80000");
 if (!Number.isInteger(compactTokens) || compactTokens < 20_000) throw new Error("CODEPAT_COMPACT_TOKENS must be an integer of at least 20000");
@@ -141,6 +146,10 @@ const heartbeat = setInterval(() => {
 }, 3000);
 console.log("CodePat is online.");
 while (!stopping) {
+  if (outdated()) {
+    console.log("A new CodePat release is live; restarting this runner.");
+    break;
+  }
   try {
     await report("idle");
     const value = await control("next", { runnerId, protocol: 1 });

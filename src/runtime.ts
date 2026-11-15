@@ -2,7 +2,10 @@ import { apiRejection } from "./api-diagnostic.ts";
 import { hasLocalLinks, readableTaskText } from "./task-links.ts";
 import { ControlConflict } from "./control-error.ts";
 import { MAX_PROGRESS, validateProgress, type Progress } from "./progress.ts";
-import { failureText } from "./recovery.ts";
+import { failureText, plainFailureText, RETRYABLE_TURN_FAILURES } from "./recovery.ts";
+
+// Loop deliverables (pitch, steps, follow-ups) open with a bold heading; anything else in a quiet turn is progress.
+const isDeliverable = (text: string): boolean => /^\s*\*\*/.test(text);
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync, statfsSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
@@ -460,9 +463,21 @@ export class Runtime implements ChatService {
       job.error = error;
       job.completedAt = Date.now();
       this.state.put("jobs", id, job);
-      // A task turn's final answer belongs on the Sokosumi task, unless the turn
-      // already delivered it or handed the task off with a status report.
-      if (job.kind === "task" && job.taskId && text && !this.state.get("jobTaskHandoff", job.id) &&
+      if (job.kind !== "task" || !job.taskId) return;
+      // A task turn that ended early is retried once, silently; only a second failure reaches the user.
+      if (error && RETRYABLE_TURN_FAILURES.includes(error)) {
+        if (!job.retryOf) {
+          this.state.enqueue({
+            conversationId: job.conversationId, kind: "task", taskId: job.taskId, quiet: job.quiet, retryOf: job.id, input: job.input,
+            recoveryNote: `The previous turn on this task ended early (${error}). Continue from where it stopped.`,
+          }, `turn-retry:${job.id}`);
+          return;
+        }
+      }
+      if (error) text = plainFailureText(error, Boolean(job.retryOf));
+      // A task turn's final answer belongs on the Sokosumi task, unless the turn already delivered it,
+      // handed the task off with a status report, or was a quiet turn nobody asked a question in.
+      if (text && !(job.quiet && !error) && !this.state.get("jobTaskHandoff", job.id) &&
           this.state.get<string>("jobTaskReport", job.id) !== text)
         this.reportTask(job.taskId, text, undefined, job.conversationId);
     });
@@ -890,6 +905,7 @@ export class Runtime implements ChatService {
                     conversationId,
                     kind: "task",
                     taskId,
+                    quiet: !hasComment,
                     input: `Sokosumi task event. Task: ${JSON.stringify(task)}\nEvent: ${JSON.stringify(event)}`,
                   },
                   `event:${id}`,
@@ -949,6 +965,7 @@ export class Runtime implements ChatService {
           conversationId: runtime.conversationId,
           kind: "task",
           taskId: runtime.taskId,
+          quiet: true,
           input: `Attached task runtime changed state: ${transitions.join(", ")}. Inspect the resource output and continue or finish the task.`,
         }, `task-runtime:${runtime.taskId}:${key}`);
       }
@@ -1000,7 +1017,7 @@ export class Runtime implements ChatService {
             } else if (health.attempts < 2) {
               const attempt = health.attempts + 1;
               this.state.enqueue({
-                conversationId: conversation.id, taskId, kind: "task",
+                conversationId: conversation.id, taskId, kind: "task", quiet: true,
                 input: `Task lifecycle check: ${issue}. Inspect preserved output, checkout, task events and attached resources before taking action. Reconcile uncertain effects before retrying. Resolve startup blockers within existing authorization, relay pending instructions with task-input acknowledgement, or report the precise waiting state. Never infer completion from idle. Task: ${JSON.stringify(task)}`,
               }, `task-health:${taskId}:${episode}:${attempt}`);
               health.attempts = attempt;
@@ -1354,6 +1371,10 @@ export class Runtime implements ChatService {
       if (previous) return this.taskReportResult(previous.notificationId);
       const task = await this.assertAssigned(job.taskId, true);
       this.assertTaskOwner(task, this.taskConversation(job));
+      if (job.quiet && (status ?? "RUNNING") === "RUNNING" && task.status === "RUNNING" && !isDeliverable(content)) {
+        this.state.put("jobTaskReport", job.id, content);
+        return { ok: true, accepted: true, posted: false, note: "Not posted: progress stays off the task, whose RUNNING status already shows it. Post status changes, deliverables (start with a bold heading) and answers to comments." };
+      }
       if (status === "COMPLETED" && this.state.get<TaskRuntime>("taskRuntimes", job.taskId)?.resources.length)
         throw new ControlConflict("Review and retire attached task resources, then detach them before reporting COMPLETED");
       if (status === "COMPLETED" && this.state.all<TaskInput>("taskInputs").some(input => input.taskId === job.taskId && !input.acknowledgement))

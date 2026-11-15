@@ -20,6 +20,10 @@ export interface Job {
   reservationProtocol?: number;
   turnStarted?: boolean;
   completedAt?: number;
+  // Woken by CodePat itself (runtime change, lifecycle check, status-only event), not by a person.
+  quiet?: boolean;
+  // Set on the one automatic retry of a task turn that ended early.
+  retryOf?: string;
 }
 export interface Conversation {
   id: string;

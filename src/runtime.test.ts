@@ -1077,16 +1077,47 @@ test("a status handoff ends the turn's task comments, but progress reports do no
   }
 });
 
-test("failed task turn surfaces a failure notice on the task", async () => {
+test("a failed task turn is retried once silently, then the user gets a plain notice", async () => {
   const f = fixture();
   try {
     const { job } = taskJob(f);
     f.runtime.nextJob("runner", 1);
     await f.runtime.control("reply", { jobId: job.id, attempt: 0, text: "", error: "turn_timeout" });
     assert.equal(f.runtime.job(job.id).status, "failed");
+    assert.equal(f.state.all<Outbox>("outbox").length, 0);
+    const retry = f.runtime.nextJob("runner", 1)!;
+    assert.equal(retry.job.retryOf, job.id);
+    assert.match(String((retry.context as { recoveryNote: string }).recoveryNote), /ended early/);
+    await f.runtime.control("reply", { jobId: retry.job.id, attempt: 0, text: "", error: "turn_timeout" });
     const items = f.state.all<Outbox>("outbox");
     assert.equal(items.length, 1);
-    assert.match(String(items[0].body.comment), /time limit/);
+    assert.match(String(items[0].body.comment), /ran out of time twice.*Reply here to continue/);
+    assert.equal(f.runtime.nextJob("runner", 1), null);
+  } finally {
+    f.close();
+  }
+});
+
+test("quiet turns keep their final answer and progress off the task but still post deliverables", async () => {
+  const f = fixture();
+  try {
+    const { conversation } = taskJob(f);
+    f.runtime.nextJob("runner", 1);
+    f.runtime.api = async () => ({ data: assignedTask });
+    const wake = f.state.enqueue({ conversationId: conversation.id, kind: "task", taskId: "task-1", quiet: true, input: "Attached task runtime changed state" });
+    const asked = f.state.enqueue({ conversationId: conversation.id, kind: "task", taskId: "task-1", input: "Sokosumi task event with a comment" });
+    const first = f.state.all<Job>("jobs").find(item => item.status === "in_progress")!;
+    f.runtime.completeJob(first.id, "First turn done.");
+    assert.equal(f.runtime.nextJob("runner", 1)!.job.id, wake.id);
+    const progress = await f.runtime.control("task-report", { jobId: wake.id, status: "RUNNING", text: "Running. Codex review is underway. Nothing needed from you." }) as { posted?: boolean };
+    assert.equal(progress.posted, false);
+    await f.runtime.control("task-report", { jobId: wake.id, status: "RUNNING", text: "**Step 1 of 3: Sign up**\n\nShe signs up." });
+    await f.runtime.control("task-report", { jobId: wake.id, status: "INPUT_REQUIRED", text: "Ready for your decision." });
+    f.runtime.completeJob(wake.id, "Review continues.");
+    assert.equal(f.runtime.nextJob("runner", 1)!.job.id, asked.id);
+    f.runtime.completeJob(asked.id, "Yes, the preview is live.");
+    const comments = f.state.all<Outbox>("outbox").map(item => String(item.body.comment).split("\n")[0]);
+    assert.deepEqual(comments, ["First turn done.", "**Step 1 of 3: Sign up**", "Ready for your decision.", "Yes, the preview is live."]);
   } finally {
     f.close();
   }
