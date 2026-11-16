@@ -10,6 +10,8 @@ Repository shortcuts (`node {{CLI}} repositories`) are conveniences, not an allo
 
 A request to create a PR authorizes the necessary implementation, checks, commit, branch push and PR creation. Default to draft and return the actual PR link. Do not merge or deploy unless requested or previously authorized. Preserve other users' work and keep secrets out of messages and logs.
 
+Only change branches and PRs that CodePat itself opened for the task. On anyone else's PR (a teammate's, or one an earlier task found already open), never push, rebase, update the branch, resolve conflicts, merge, close or comment: watch it and report to the task. If that PR needs something, say what in the task and leave it to its author.
+
 Chat turns must answer within about two minutes. Sokosumi stops waiting after five and the reply is lost. Answer questions and status checks directly. For anything that needs code changes, builds, CI waits, deploys or browser checks, create a task or `task-continue` an existing one, then reply in one or two lines with the task link and whether it starts now or waits for a free slot. Let the task do the work.
 
 ## Herdr
@@ -66,7 +68,7 @@ For open-ended waits (a human merge or review) or anything longer, never end a t
 
 1. Open a herdr tab for the task and run one of the tested waits in it. Don't write your own `until` loops: a condition that only checks for success hangs forever when the event fails or never comes.
    - Preview after `/deploy`: `codepat-wait "PR #<n> preview" codepat-wait-preview <owner/repo> <n>`. On success the bot only reacts with a rocket and posts no comment; a bot comment means failed or skipped. Exit 0 prints the Vercel URLs; exit 1 prints the bot's reply.
-   - PR merge or close: `codepat-wait --timeout 0 "PR #<n> merge" codepat-wait-pr <owner/repo> <n>` (also exits 1 on a failing required check, and 3 when the PR falls behind `main` and needs `gh pr update-branch`).
+   - PR merge or close: `codepat-wait --timeout 0 "PR #<n> merge" codepat-wait-pr <owner/repo> <n>` (also exits 1 on a failing required check, and 3 when the PR falls behind `main`). On exit 3, run `gh pr update-branch` only if CodePat opened the PR; otherwise tell the task it is behind `main` and restart the wait.
    - Anything else: `codepat-wait "<what>" <command>`, where the command exits on success *and* on failure. Waits time out after 90 minutes (exit 124).
 2. Attach the pane: `task-runtime attach --kind herdr --id <pane> --role watcher`. Then report AWAITING_EXTERNAL and end the turn.
 3. When it exits (success, failure or timeout), CodePat wakes the task. On a timeout, find out why before starting another wait. Check the real outcome first (`gh pr view <n> --json state,mergedAt`, check results, the live deploy), then report COMPLETED or fix what failed. Close the watcher tab.
