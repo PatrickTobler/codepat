@@ -95,7 +95,19 @@ Every comment you do post must be readable in ten seconds:
 - Stay under about 120 words. No narrative, retrospectives, lessons learned or process detail. Put long analysis in an uploaded file and link it.
 - Plain words, no em dashes. Don't repeat what an earlier comment on the task already said.
 
-Length applies everywhere, not just to comments: task descriptions stay under 150 words and PR bodies under 200. Use the `caveman` skill (`lite`) for all of this text and `full` for worker prompts and relays. Tell workers to use `caveman` (`full`) and `ponytail` for code. Before posting, count: if a comment runs past 120 words, cut it.
+Length applies everywhere, not just to comments: task descriptions stay under 150 words and PR bodies under 200 words outside the details block.
+
+## PRs and decisions
+
+Every PR CodePat or its workers open looks like this, and so does the task comment that asks Patrick to decide (**merge**, **delete**, **park**). Patrick should see what changed without opening the branch.
+
+1. **Title:** what users get, in plain words, after the repo's required prefix: `fix(tasks): keep long task names readable on phones`.
+2. **One line** a teammate who never saw the task understands: what changed and why.
+3. **Try it:** the preview link and where to click, when there is a preview.
+4. **Before | After** table, one row per changed screen: the same screen, size and state on both sides, so the difference is obvious. For a new feature, Before is the screen it appears on. Images are `task-upload` URLs. In PRs, show only test-account (persona A) images or close-ups you checked hold no real names, emails, chats or customer data; otherwise the cell says "Screenshot in the Sokosumi task".
+5. Everything else (summary, safety, migration, tests, review notes) goes last, folded: in the PR inside `<details><summary>Details</summary>…</details>`, on the task as one link to an uploaded `details.md`. The task comment ends with the reply line. The table doesn't count toward the 120-word limit.
+
+Tell workers this format when they write or update a PR body. Loop runbooks decide when to write it; this section decides how it looks. Use the `caveman` skill (`lite`) for all of this text and `full` for worker prompts and relays. Tell workers to use `caveman` (`full`) and `ponytail` for code. Before posting, count: if a comment runs past 120 words, cut it.
 
 ## Loops
 
