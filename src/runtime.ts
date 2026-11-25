@@ -475,8 +475,8 @@ export class Runtime implements ChatService {
         }
       }
       if (error) text = plainFailureText(error, Boolean(job.retryOf));
-      // A task turn's final answer belongs on the Sokosumi task, unless the turn already delivered it,
-      // handed the task off with a status report, or was a quiet turn nobody asked a question in.
+      // A task turn's final answer belongs on the Sokosumi task, unless the turn already posted a report
+      // (its final answer would only restate it) or was a quiet turn nobody asked a question in.
       if (text && !(job.quiet && !error) && !this.state.get("jobTaskHandoff", job.id) &&
           this.state.get<string>("jobTaskReport", job.id) !== text)
         this.reportTask(job.taskId, text, undefined, job.conversationId);
@@ -1410,7 +1410,7 @@ export class Runtime implements ChatService {
         }
         this.state.put("taskReportReceipts", receipt, { notificationId });
         this.state.put("jobTaskReport", job.id, content);
-        if (status && status !== "RUNNING") this.state.put("jobTaskHandoff", job.id, true);
+        this.state.put("jobTaskHandoff", job.id, true);
         return this.taskReportResult(notificationId);
       });
     }

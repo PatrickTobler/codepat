@@ -1058,7 +1058,7 @@ test("task turn completion delivers once to the task without duplicating explici
   }
 });
 
-test("a status handoff ends the turn's task comments, but progress reports do not", async () => {
+test("a posted report ends the turn's task comments", async () => {
   const f = fixture();
   try {
     const { job } = taskJob(f);
@@ -1070,8 +1070,8 @@ test("a status handoff ends the turn's task comments, but progress reports do no
     const again = taskJob(f, "task-2");
     f.runtime.nextJob("runner", 1);
     await f.runtime.control("task-report", { jobId: again.job.id, status: "RUNNING", text: "Step 1 of 3" });
-    await f.runtime.control("reply", { jobId: again.job.id, attempt: 0, text: "All steps posted." });
-    assert.equal(f.state.all("outbox").length, 3, "a final answer after progress reports is still delivered");
+    await f.runtime.control("reply", { jobId: again.job.id, attempt: 0, text: "Started step 1 of 3." });
+    assert.equal(f.state.all("outbox").length, 2, "a recap after a RUNNING report adds nothing");
   } finally {
     f.close();
   }

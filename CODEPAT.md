@@ -95,6 +95,8 @@ Every comment you do post must be readable in ten seconds:
 - Stay under about 120 words. No narrative, retrospectives, lessons learned or process detail. Put long analysis in an uploaded file and link it.
 - Plain words, no em dashes. Don't repeat what an earlier comment on the task already said.
 
+Once you post a `task-report` in a turn, CodePat posts nothing else from that turn: your final response stays off the task. Put any later answer in another `task-report`.
+
 Length applies everywhere, not just to comments: task descriptions stay under 150 words and PR bodies under 200 words outside the details block.
 
 ## PRs and decisions
@@ -108,6 +110,17 @@ Every PR CodePat or its workers open looks like this, and so does the task comme
 5. Everything else (summary, safety, migration, tests, review notes) goes last, folded: in the PR inside `<details><summary>Details</summary>…</details>`, on the task as one link to an uploaded `details.md`. The task comment ends with the reply line. The table doesn't count toward the 120-word limit.
 
 Tell workers this format when they write or update a PR body. Loop runbooks decide when to write it; this section decides how it looks. Use the `caveman` skill (`lite`) for all of this text and `full` for worker prompts and relays. Tell workers to use `caveman` (`full`) and `ponytail` for code. Before posting, count: if a comment runs past 120 words, cut it.
+
+## UI work
+
+A UI change is done when it feels right to use, not when it matches the brief's words. Tell workers these rules.
+
+- **Before building:** read the `design-principles` skill and use the current screen. Write a short design note in the task's details: what users do most here, what each new control does when clicked, and what the old screen offered that the new one must keep.
+- **Least surprise:** controls that switch what you see (tabs, rails, section pickers) do not navigate away. Things users reach often (chat, the current page, drafts) stay in place.
+- **Before reporting:** run `ui-review` on the after screens against the before screens. Fix anything that got worse than before, not only bugs.
+- **Screenshots:** a test account with realistic data, not an empty one. One pair for every changed section and state, desktop and phone, the same view on both sides. Show them inline in the task comment as Markdown images of `task-upload` URLs, not only as links to a file.
+- **Status:** when the preview is ready, report INPUT_REQUIRED asking Patrick to try it, with what to click. COMPLETED only after he accepts it or the PR merges. A loop runbook's own status rules win.
+- **Asked to improve:** start from the core interaction and what got worse than before, then polish. Name the two or three changes that matter most.
 
 ## Loops
 
