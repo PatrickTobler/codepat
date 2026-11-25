@@ -1,0 +1,12 @@
+#!/bin/bash
+# Usage: codepat-wait-pr <owner/repo> <pr-number>
+# Waits until the PR is merged or closed, or until a required check fails.
+set -u
+repo=$1; pr=$2
+while :; do
+  state=$(gh pr view "$pr" --repo "$repo" --json state -q .state) || { sleep 60; continue; }
+  [ "$state" != OPEN ] && { echo "PR #$pr is $state"; exit 0; }
+  failed=$(gh pr checks "$pr" --repo "$repo" --required --json bucket -q '[.[]|select(.bucket=="fail")]|length' 2>/dev/null || echo 0)
+  [ "${failed:-0}" -gt 0 ] && { echo "PR #$pr has $failed failing required checks"; exit 1; }
+  sleep 60
+done

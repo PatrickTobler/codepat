@@ -1,0 +1,19 @@
+#!/bin/bash
+# Usage: codepat-wait [--timeout <minutes>] "<what>" <command...>
+# Runs a command that exits when an external event happens (CI, merge, deploy).
+# The pane reports as a working agent while it runs and idle afterwards, so
+# CodePat wakes the task this pane is attached to. Default timeout 90 minutes
+# (exit 124); --timeout 0 disables it.
+set -u
+minutes=90
+[ "${1:-}" = --timeout ] && { minutes=$2; shift 2; }
+msg=$1; shift
+pane=${HERDR_PANE_ID:?run inside a herdr pane}
+report() { herdr pane report-agent "$pane" --source codepat-wait --agent watcher --state "$1" --message "$2" >/dev/null; }
+report working "$msg"
+if [ "$minutes" -gt 0 ]; then timeout "${minutes}m" "$@"; else "$@"; fi
+code=$?
+[ $code -eq 124 ] && echo "codepat-wait: $msg timed out after $minutes minutes"
+echo "codepat-wait: $msg finished with exit $code"
+report idle "$msg: exit $code"
+exit $code
