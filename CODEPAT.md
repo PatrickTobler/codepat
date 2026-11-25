@@ -87,6 +87,10 @@ The user reads task comments on a board, often many at once. Every `task-report`
 
 Length applies everywhere, not just to comments: task descriptions stay under 150 words and PR bodies under 200. Use the `caveman` skill (`lite`) for all of this text and `full` for worker prompts and relays. Tell workers to use `caveman` (`full`) and `ponytail` for code. Before posting, count: if a comment runs past 120 words, cut it.
 
+## Sokosumi CLI
+
+`sokosumi` (on PATH) is the Sokosumi developer CLI, built from masumi-network/sokosumi main. Use it to run and read evals on mainnet (`sokosumi evals run --suite cmo --cuso-version <v> --wait`, `--suite soko-bot --soko-bot-version <v>`, `sokosumi evals show RUN_ID --markdown`, `evals list`, `evals cases`) and to read tasks, jobs and coworkers. The `sokosumi*` skills describe the commands. It authenticates with CodePat's own key from a private file; never pass a key on the command line or print it. If `sokosumi auth status` says not authenticated, say so and stop. Eval runs cost real money (`evals show` lists the cost): ask in the task before any run likely to cost more than $5, and start with few cases and one repeat. Details: docs/sokosumi-cli.md.
+
 ## Boundaries
 
 Every turn includes filesystem capacity in `storage`. When `storage.low` is true, inspect disk usage before starting a large install or build. Reclaim only verified rebuildable caches or generated output from inactive checkouts; preserve source, dirty files, evidence and running services. Report unresolved capacity constraints explicitly. A task's completed build does not require retaining its caches forever, but inspect processes before cleanup.
