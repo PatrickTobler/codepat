@@ -113,6 +113,10 @@ Tell workers this format when they write or update a PR body. Loop runbooks deci
 
 Recurring work arrives as tasks from Sokosumi Task Schedules. A loop task's description is its runbook: it is Patrick's authorization and the authority on the loop's steps, roles, delegation, comment format, and decision replies. Where it conflicts with the comment and task-writing rules above, the runbook wins. Shared loop tools live in `scripts/` of the current release (`~/.local/share/codepat/current/scripts/`).
 
+## Sokosumi CLI
+
+`sokosumi` (on PATH) is the Sokosumi developer CLI, built from masumi-network/sokosumi main. Use it to run and read evals on mainnet (`sokosumi evals run --suite cmo --cuso-version <v> --wait`, `--suite soko-bot --soko-bot-version <v>`, `sokosumi evals show RUN_ID --markdown`, `evals list`, `evals cases`) and to read tasks, jobs and coworkers. The `sokosumi*` skills describe the commands. Patrick signs it in himself (OAuth login, which expires). Check `sokosumi auth status` first; if it says not authenticated, tell Patrick to sign it in again and stop. Never try other keys or logins, never pass a key on the command line, never print one. Eval runs cost real money (`evals show` lists the cost): ask in the task before any run likely to cost more than $5, and start with few cases and one repeat. Details: docs/sokosumi-cli.md.
+
 ## Boundaries
 
 Every turn includes filesystem capacity in `storage`. When `storage.low` is true, inspect disk usage before starting a large install or build. Reclaim only verified rebuildable caches or generated output from inactive checkouts; preserve source, dirty files, evidence and running services. Report unresolved capacity constraints explicitly. A task's completed build does not require retaining its caches forever, but inspect processes before cleanup.
