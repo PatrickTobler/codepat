@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { ClaudeTurn, claudeArgs, claudeCompactArgs, claudeSessionId, shouldFallBack } from "./orchestrator-fallback.ts";
+import { ClaudeTurn, claudeArgs, claudeCompactArgs, claudeInput, claudeSessionId, shouldFallBack } from "./orchestrator-fallback.ts";
 
 test("falls back only when Codex was unavailable before acting", () => {
   for (const kind of ["provider_usage_limit", "provider_auth", "provider_rate_limit", "provider_connection", "provider_context_limit"]) {
@@ -66,4 +66,26 @@ test("Claude turns report their latest context size and compact their own sessio
   assert.equal(turn.contextTokens, 91_005);
   const args = claudeCompactArgs("conv_1");
   assert.deepEqual(args.slice(-3), ["--resume", claudeSessionId("conv_1"), "/compact"]);
+});
+
+test("a result is final only once no background task is running", () => {
+  const turn = new ClaudeTurn();
+  turn.ingest({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "b1" }] });
+  assert.equal(turn.ingest({ type: "system", subtype: "task_started", task_id: "b1", description: "Wait for PR 7" }), "Background task started: Wait for PR 7");
+  turn.ingest({ type: "result", subtype: "success", is_error: false, result: "Waiting on PR 7." });
+  assert.equal(turn.settled, false);
+  turn.ingest({ type: "system", subtype: "background_tasks_changed", tasks: [] });
+  turn.ingest({ type: "system", subtype: "task_notification", task_id: "b1", status: "completed" });
+  assert.equal(turn.settled, false);
+  turn.ingest({ type: "result", subtype: "success", is_error: false, result: "PR 7 merged." });
+  assert.deepEqual([turn.settled, turn.text], [true, "PR 7 merged."]);
+  const failed = new ClaudeTurn();
+  failed.ingest({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "b1" }] });
+  failed.ingest({ type: "result", subtype: "error_during_execution", is_error: true });
+  assert.equal(failed.settled, true);
+});
+
+test("Claude turns read their prompt as streaming input", () => {
+  assert.ok(claudeArgs({ cwd: "/tmp" }).join(" ").includes("--input-format stream-json"));
+  assert.deepEqual(JSON.parse(claudeInput("hi")), { type: "user", message: { role: "user", content: "hi" } });
 });
