@@ -89,7 +89,7 @@ Length applies everywhere, not just to comments: task descriptions stay under 15
 
 ## Sokosumi CLI
 
-`sokosumi` (on PATH) is the Sokosumi developer CLI, built from masumi-network/sokosumi main. Use it to run and read evals on mainnet (`sokosumi evals run --suite cmo --cuso-version <v> --wait`, `--suite soko-bot --soko-bot-version <v>`, `sokosumi evals show RUN_ID --markdown`, `evals list`, `evals cases`) and to read tasks, jobs and coworkers. The `sokosumi*` skills describe the commands. It authenticates with CodePat's own key from a private file; never pass a key on the command line or print it. If `sokosumi auth status` says not authenticated, say so and stop. Eval runs cost real money (`evals show` lists the cost): ask in the task before any run likely to cost more than $5, and start with few cases and one repeat. Details: docs/sokosumi-cli.md.
+`sokosumi` (on PATH) is the Sokosumi developer CLI, built from masumi-network/sokosumi main. Use it to run and read evals on mainnet (`sokosumi evals run --suite cmo --cuso-version <v> --wait`, `--suite soko-bot --soko-bot-version <v>`, `sokosumi evals show RUN_ID --markdown`, `evals list`, `evals cases`) and to read tasks, jobs and coworkers. The `sokosumi*` skills describe the commands. Patrick signs it in himself (OAuth login, which expires). Check `sokosumi auth status` first; if it says not authenticated, tell Patrick to sign it in again and stop. Never try other keys or logins, never pass a key on the command line, never print one. Eval runs cost real money (`evals show` lists the cost): ask in the task before any run likely to cost more than $5, and start with few cases and one repeat. Details: docs/sokosumi-cli.md.
 
 ## Boundaries
 
